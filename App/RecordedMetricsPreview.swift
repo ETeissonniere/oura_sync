@@ -91,7 +91,9 @@
       // Distinct night lengths make history navigation observable in UI tests.
       for day in (0..<3).reversed() {
         let sleepEnd = counter - 3_600 - UInt32(day * 864_000)
-        let pageCount = 16 - day * 2
+        let denseSleep = day == 0 && ProcessInfo.processInfo.arguments.contains("--dense-sleep")
+        let pageCount = denseSleep ? 20 : 16 - day * 2
+        let denseBytes = denseSleep ? Self.denseSleepBytes() : []
         events.append(
           Self.event(
             0x76, sleepEnd,
@@ -103,8 +105,12 @@
         }
         for page in 0..<pageCount {
           let packed: UInt8 = [0x55, 0x00, 0x55, 0xaa, 0x55, 0xff, 0x55, 0xaa][page % 8]
+          let body =
+            denseSleep
+            ? Array(denseBytes[(page * 13)..<((page + 1) * 13)])
+            : Array(repeating: packed, count: 13)
           events.append(
-            Self.event(0x5a, sleepEnd, [UInt8(page)] + Array(repeating: packed, count: 13)))
+            Self.event(0x5a, sleepEnd, [UInt8(page)] + body))
         }
       }
       if ProcessInfo.processInfo.arguments.contains("--nightly-trends") {
@@ -120,6 +126,23 @@
         ProcessInfo.processInfo.arguments.contains("--empty-nightly-vitals")
         ? measurements.filter { $0.kind == .inBed } : measurements
       nightlyVitals = NightlyVitals.calculate(measurements: nightlyMeasurements, session: session)
+    }
+
+    private static func denseSleepBytes() -> [UInt8] {
+      // 1,040 half-minute epochs: 8h 40m, 91 transitions, including 14 short runs.
+      var epochs: [UInt8] = []
+      var extraEpochs = 12
+      for run in 0..<92 {
+        let short = run.isMultiple(of: 7)
+        let extra = !short && extraEpochs > 0 ? 1 : 0
+        extraEpochs -= extra
+        let stage: UInt8 = [1, 0, 1, 2, 1, 3][run % 6]
+        epochs += Array(repeating: stage, count: short ? 1 : 13 + extra)
+      }
+      return stride(from: 0, to: epochs.count, by: 4).map { index in
+        (epochs[index] << 6) | (epochs[index + 1] << 4)
+          | (epochs[index + 2] << 2) | epochs[index + 3]
+      }
     }
 
     private static func bytes(_ value: UInt32) -> [UInt8] {

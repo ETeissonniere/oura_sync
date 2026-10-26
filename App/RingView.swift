@@ -1,3 +1,4 @@
+import OuraProtocol
 import SwiftUI
 
 struct RingView: View {
@@ -46,6 +47,8 @@ struct RingView: View {
         VStack(alignment: .leading, spacing: 8) {
           Text(ring.message).font(.subheadline)
           DetailRow(title: "Background sync", value: ring.backgroundStatus)
+          transferEvidence("Last foreground transfer", ring.historySyncEvidence.foreground)
+          transferEvidence("Last background transfer", ring.historySyncEvidence.background)
           DetailRow(title: "Daytime heart rate", value: ring.daytimeHeartRateStatus)
           DetailRow(title: "Blood oxygen", value: ring.oxygenRecordingStatus)
           Text(
@@ -74,6 +77,31 @@ struct RingView: View {
       }
     }
     .sheet(isPresented: $showSetup) { OnboardingView().environment(ring) }
+  }
+
+  @ViewBuilder
+  private func transferEvidence(_ title: String, _ transfer: HistorySyncProgress.Transfer?)
+    -> some View
+  {
+    VStack(alignment: .leading, spacing: 3) {
+      Text(title).font(.caption.weight(.medium))
+      if let transfer {
+        let outcome: String =
+          switch transfer.outcome {
+          case .saved: "Progress saved"
+          case .upToDate: "Up to date"
+          case .interrupted: "Interrupted; progress saved"
+          case .failed: "Stopped with an error; progress saved"
+          }
+        Text("\(transfer.events.formatted()) records · \(outcome)")
+          .font(.caption).foregroundStyle(Color.secondaryInk)
+        Text(transfer.date.formatted(date: .abbreviated, time: .shortened))
+          .font(.caption2).foregroundStyle(Color.secondaryInk)
+      } else {
+        Text("No history transfer recorded yet")
+          .font(.caption).foregroundStyle(Color.secondaryInk)
+      }
+    }
   }
 }
 

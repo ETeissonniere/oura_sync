@@ -29,8 +29,8 @@ This is an independent implementation, not a replacement for every Oura feature.
 
 - **Steps, calories, and automatic workouts:** not implemented. The research projects omit the proprietary model weights used by their activity pipeline. Activity intensity and movement recordings are available, but are not step counts. Independent estimates are possible; none are presented as measured steps.
 - **Advanced scores and predictions:** readiness, stress, resilience, cardiovascular age, fitness, and reproductive predictions are not implemented.
-- **Overnight measurements:** HRV, skin temperature, breathing, oxygen, and sleep depend on what the ring records. Their decoders and UI have simulator coverage; validation against this ring’s overnight recordings is pending. Sleep-stage clock times are estimated, so stages are not exported to Apple Health.
-- **Background sync:** iOS controls execution. Leave the app in the app switcher; force-quitting can prevent syncing. A short locked-phone sync and Health export test passed, but overnight reliability is still being tested.
+- **Overnight measurements:** HRV, skin temperature, breathing, oxygen, and sleep records have been received from a Horizon Gen 3 after a night of wear. This confirms data availability, not sensor accuracy. Sleep-stage clock times are estimated, so stages are not exported to Apple Health. Charts preserve short stage changes rather than smoothing them away.
+- **Background sync:** iOS controls execution. Leave the app in the app switcher; force-quitting can prevent syncing. Controlled background transfers and a short locked-phone sync with Health export have passed; autonomous overnight reliability remains unverified. **My ring → Sync details** shows the latest actual foreground and background transfers. Foreground downloads continue until caught up; background downloads save progress within a limited execution window.
 
 ## Run
 

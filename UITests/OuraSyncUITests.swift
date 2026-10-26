@@ -189,6 +189,23 @@ final class OuraSyncUITests: XCTestCase {
     attachScreenshot("Sample sleep design")
   }
 
+  func testDenseSleepStagesRemainReadable() {
+    let app = XCUIApplication()
+    app.launchArguments = ["--recorded", "--nightly-vitals-only", "--dense-sleep"]
+    app.launch()
+    let chart = app.otherElements.containing(
+      NSPredicate(format: "label == %@", "Ring sleep stages. Clock times are approximate.")
+    ).firstMatch
+    XCTAssertTrue(app.staticTexts["RECORDED SLEEP"].waitForExistence(timeout: 10))
+    reveal(chart, in: app)
+    attachScreenshot("Dense sleep stages with 91 transitions")
+    XCTAssertTrue(app.buttons["Previous sleep recording"].isEnabled)
+    app.buttons["Previous sleep recording"].tap()
+    XCTAssertTrue(app.buttons["Next sleep recording"].isEnabled)
+    app.buttons["Next sleep recording"].tap()
+    XCTAssertFalse(app.buttons["Next sleep recording"].isEnabled)
+  }
+
   func testSleepHistoryNavigatesDatesAndDisablesBoundaryButtons() throws {
     let app = XCUIApplication()
     app.launchArguments = ["--recorded"]

@@ -115,10 +115,10 @@ struct SleepStageChart: View {
           yEnd: .value(
             "To",
             max(SleepChartStyle.level(transition.from), SleepChartStyle.level(transition.to)) - 0.13
-          ), width: .fixed(10)
+          ), width: .fixed(1.5)
         )
-        .cornerRadius(5)
-        .foregroundStyle(SleepChartStyle.color(transition.to, scheme: colorScheme).opacity(0.18))
+        .cornerRadius(0.75)
+        .foregroundStyle(SleepChartStyle.color(transition.to, scheme: colorScheme).opacity(0.12))
         .accessibilityHidden(true)
       }
       ForEach(intervals) { interval in

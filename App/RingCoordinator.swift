@@ -23,6 +23,7 @@ final class RingCoordinator {
   private(set) var battery: Int?
   private(set) var lastSync: Date?
   private(set) var syncedEvents = 0
+  private(set) var historySyncEvidence = HistorySyncProgress()
   private(set) var backgroundStatus = "Waiting for setup"
   private(set) var oxygenRecordingStatus = "Pending ring verification"
   private(set) var daytimeHeartRateStatus = "Pending ring verification"
@@ -49,6 +50,11 @@ final class RingCoordinator {
       }
     }
     lastSync = UserDefaults.standard.object(forKey: "ring.lastSync") as? Date
+    if let data = UserDefaults.standard.data(forKey: "ring.historySyncEvidence"),
+      let evidence = try? JSONDecoder().decode(HistorySyncProgress.self, from: data)
+    {
+      historySyncEvidence = evidence
+    }
     if pairing?.automaticRecordingNeedsRestore == true {
       daytimeHeartRateStatus = "Automatic recording needs restoration. Sync your ring to retry."
     } else if pairing?.measurementsConfigured == true {
@@ -166,6 +172,8 @@ final class RingCoordinator {
     battery = nil
     lastSync = nil
     UserDefaults.standard.removeObject(forKey: "ring.lastSync")
+    historySyncEvidence = HistorySyncProgress()
+    UserDefaults.standard.removeObject(forKey: "ring.historySyncEvidence")
     daytimeHeartRateStatus = "Pending ring verification"
     oxygenRecordingStatus = "Pending ring verification"
   }
@@ -334,12 +342,29 @@ final class RingCoordinator {
     var cursor = try await store.cursor(session: pairing.session)
     syncedEvents = 0
     var tailPasses = 0
-    let deadline = Date.now.addingTimeInterval(25)
-    while Date.now < deadline {
+    var budget = SyncDrainBudget()
+    var progress = HistorySyncProgress()
+    var outcome = HistorySyncProgress.Outcome.failed
+    defer {
+      progress.finish(Task.isCancelled ? .interrupted : outcome)
+      saveSyncEvidence(progress)
+    }
+    while budget.permitsNextBatch(
+      uptime: ProcessInfo.processInfo.systemUptime,
+      foreground: UIApplication.shared.applicationState == .active,
+      cancelled: Task.isCancelled)
+    {
       try Task.checkCancellation()
       let batch = try await client.history(cursor: cursor)
       try await store.commit(batch, session: pairing.session, expectedCursor: cursor)
       syncedEvents += batch.events.count
+      let applicationState = UIApplication.shared.applicationState
+      if applicationState != .inactive {
+        progress.saved(
+          events: batch.events.count, at: .now,
+          inBackground: applicationState == .background)
+      }
+      saveSyncEvidence(progress)
       message = "Saved \(syncedEvents.formatted()) measurements"
       if batch.nextCursor == cursor {
         if batch.bytesRemaining > 0 {
@@ -347,6 +372,7 @@ final class RingCoordinator {
             "The ring has more history but made no progress. Your saved measurements are safe; try syncing again."
           )
         }
+        outcome = .upToDate
         await finishSync()
         return true
       }
@@ -357,14 +383,25 @@ final class RingCoordinator {
         tailPasses = 0
       }
       if tailPasses >= 3 {
+        outcome = .upToDate
         await finishSync()
         return true
       }
     }
+    try Task.checkCancellation()
+    outcome = .saved
     automaticSyncPending = true
     message = "Progress saved. Sync will continue automatically when the app can run."
     await refreshMeasurements()
     return false
+  }
+
+  private func saveSyncEvidence(_ progress: HistorySyncProgress) {
+    if let foreground = progress.foreground { historySyncEvidence.foreground = foreground }
+    if let background = progress.background { historySyncEvidence.background = background }
+    if let data = try? JSONEncoder().encode(historySyncEvidence) {
+      UserDefaults.standard.set(data, forKey: "ring.historySyncEvidence")
+    }
   }
 
   private func finishSync() async {
