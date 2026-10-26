@@ -1,5 +1,8 @@
 # Oura Sync
 
+> [!WARNING]
+> This project is almost entirely vibecoded as an experiment to see if I could replace the unnecessary and frustrating Oura membership with a proper offline iOS app. Use at your own risks.
+
 A native SwiftUI app for syncing an Oura Horizon Gen 3 directly over Bluetooth. No Oura account is required for pairing or syncing.
 
 ![Oura Sync walkthrough](docs/media/oura-sync.gif)
