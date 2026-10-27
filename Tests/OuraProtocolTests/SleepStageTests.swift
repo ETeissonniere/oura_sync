@@ -131,3 +131,139 @@ func clockCorrectionAfterBedtimePreservesNightlySummaryAssociation(bedtimeEnd: U
     summary.end == Date(timeIntervalSince1970: 1_789_998_000 + Double(bedtimeEnd - 80_000) / 10))
   #expect(period.end == sleepReference.addingTimeInterval(-50))
 }
+
+private func corroboratedSleepEvents(pageTime: UInt32 = 100_100) throws -> [RingEvent] {
+  try [
+    sleepAnchor(at: 80_000, unix: 1_789_998_000),
+    sleepEvent(0x49, 100_000, [27, 0, 1, 0]),
+    sleepEvent(0x76, 100_000, sleepBytes(83_800) + sleepBytes(99_400)),
+    sleepPage(0, at: pageTime, packed: 0xff),
+  ]
+}
+
+@Test(arguments: [UInt32(100_100), UInt32(105_999)])
+func completeStagesUseCorroboratedSummaryDespiteLateAnalysis(pageTime: UInt32) throws {
+  let period = try #require(
+    SleepStages(
+      events: corroboratedSleepEvents(pageTime: pageTime), session: UUID(),
+      now: sleepReference.addingTimeInterval(1_000)
+    ).periods.first)
+  #expect(period.timing == .corroboratedBySleepSummary)
+  #expect(period.start == sleepReference.addingTimeInterval(-1_620))
+  #expect(period.end == sleepReference.addingTimeInterval(-60))
+  #expect(period.epochs.count == 52)
+  #expect(period.epochs.allSatisfy { $0.stage == .awake })
+}
+
+@Test(arguments: [
+  "missingSummary", "missingBedtime", "partial", "competingSummary", "competingBedtime",
+  "conflictingBedtime", "distant", "malformedSummary",
+])
+func uncertainSummaryAssociationKeepsEstimatedTiming(scenario: String) throws {
+  var events = try corroboratedSleepEvents()
+  switch scenario {
+  case "missingSummary": events.removeAll { $0.tag == 0x49 }
+  case "missingBedtime": events.removeAll { $0.tag == 0x76 }
+  case "partial":
+    events.removeAll { $0.tag == 0x49 }
+    events.append(try sleepEvent(0x49, 100_000, [53, 0, 1, 0]))
+  case "competingSummary": events.append(try sleepEvent(0x49, 100_001, [27, 0, 1, 0]))
+  case "competingBedtime":
+    events.append(try sleepEvent(0x76, 100_000, sleepBytes(83_801) + sleepBytes(99_401)))
+  case "conflictingBedtime":
+    events.append(try sleepEvent(0x76, 100_000, sleepBytes(83_800) + sleepBytes(99_401)))
+  case "distant":
+    events.removeAll { $0.tag == 0x5a }
+    events.append(try sleepPage(0, at: 106_001))
+  default: events.append(try sleepEvent(0x49, 100_001, [0]))
+  }
+  let period = try #require(
+    SleepStages(
+      events: events, session: UUID(),
+      now: sleepReference.addingTimeInterval(1_000)
+    ).periods.first)
+  #expect(period.timing == .estimatedFromAnalysisCompletion)
+}
+
+@Test func summaryReplayDoesNotInvalidateCorroboration() throws {
+  var events = try corroboratedSleepEvents()
+  events.append(contentsOf: events.filter { $0.tag == 0x49 || $0.tag == 0x76 })
+  let period = try #require(
+    SleepStages(
+      events: events, session: UUID(),
+      now: sleepReference.addingTimeInterval(1_000)
+    ).periods.first)
+  #expect(period.timing == .corroboratedBySleepSummary)
+}
+
+@Test func corroboratedStagesUseClockBeforeSummaryEnd() throws {
+  var events = try corroboratedSleepEvents()
+  events.append(try sleepAnchor(at: 99_900, unix: 1_789_999_500))
+  let period = try #require(
+    SleepStages(
+      events: events, session: UUID(),
+      now: sleepReference
+    ).periods.first)
+  #expect(period.end == sleepReference.addingTimeInterval(-60))
+  #expect(period.end.timeIntervalSince(period.start) == 26 * 60)
+}
+
+@Test func stageRevisionPreservesBedtimeAndEpochIdentity() throws {
+  let session = UUID()
+  var events = try corroboratedSleepEvents()
+  let original = try #require(
+    SleepStages(
+      events: events, session: session,
+      now: sleepReference.addingTimeInterval(1_000)
+    ).periods.first)
+  events.append(try sleepPage(0, at: 100_200, packed: 0))
+  let revised = SleepStages(
+    events: events, session: session,
+    now: sleepReference.addingTimeInterval(1_000))
+  #expect(revised.periods.count == 1)
+  let period = try #require(revised.periods.first)
+  #expect(period.id == original.id)
+  #expect(period.epochs.map(\.id) == original.epochs.map(\.id))
+  #expect(period.epochs.allSatisfy { $0.stage == .deep })
+}
+
+@Test func partialReanalysisDoesNotDisplaceCorroboratedNight() throws {
+  let events = try [
+    sleepAnchor(at: 60_000, unix: 1_789_996_000),
+    sleepEvent(0x49, 100_000, [53, 0, 1, 0]),
+    sleepEvent(0x76, 100_000, sleepBytes(68_200) + sleepBytes(99_400)),
+    sleepPage(0, at: 100_100), sleepPage(1, at: 100_101),
+    sleepPage(0, at: 100_200),
+  ]
+  let periods = SleepStages(
+    events: events, session: UUID(), now: sleepReference.addingTimeInterval(100)
+  ).periods
+  #expect(periods.count == 1)
+  #expect(periods.first?.epochs.count == 104)
+  #expect(periods.first?.timing == .corroboratedBySleepSummary)
+}
+
+@Test(arguments: [false, true])
+func conflictingSameTimeAnalysesAreRejected(reversed: Bool) throws {
+  var events = try corroboratedSleepEvents()
+  events.append(try sleepPage(0, at: 100_100, packed: 0))
+  if reversed { events.reverse() }
+  let decoded = SleepStages(
+    events: events, session: UUID(), now: sleepReference.addingTimeInterval(100))
+  #expect(decoded.periods.isEmpty)
+  #expect(decoded.rejectedRuns == 2)
+}
+
+@Test func corroboratedWindowUsesSameClockAsBedtimeAcrossCorrection() throws {
+  var events = try corroboratedSleepEvents()
+  events.removeAll { $0.tag == 0x76 }
+  events.append(try sleepEvent(0x76, 100_000, sleepBytes(83_800) + sleepBytes(99_399)))
+  events.append(try sleepAnchor(at: 99_400, unix: 1_789_990_000))
+  let period = try #require(
+    SleepStages(events: events, session: UUID(), now: sleepReference.addingTimeInterval(100))
+      .periods.first)
+  let bedtime = try #require(period.recordedBedtime)
+  #expect(period.timing == .corroboratedBySleepSummary)
+  #expect(abs(period.end.timeIntervalSince(bedtime.end) - 0.1) < 0.001)
+  #expect(period.end.timeIntervalSince(period.start) == 26 * 60)
+}

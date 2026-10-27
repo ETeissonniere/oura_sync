@@ -115,7 +115,9 @@ struct RecordedSleepStagesView: View {
         .font(.subheadline).accessibilityElement(children: .combine)
       }
       Text(
-        "Stages reported by your ring. Clock times are estimated from when its analysis finished; this recording may cover only part of your night."
+        period.timing == .corroboratedBySleepSummary
+          ? "Stages reported by your ring, positioned using its sleep summary and matching bedtime window. Stage timing remains approximate and is not exported to Apple Health."
+          : "Stages reported by your ring. Clock times are estimated from when its analysis finished; this recording may cover only part of your night."
       )
       .font(.caption).foregroundStyle(Color.secondaryInk)
     }

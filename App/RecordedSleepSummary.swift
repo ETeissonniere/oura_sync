@@ -18,7 +18,9 @@ struct RecordedSleepSummary: View {
         .font(.subheadline).foregroundStyle(Color.secondaryInk)
       SleepStageChart(intervals: SleepChartStyle.intervals(for: period))
       Text(
-        "Time asleep across available stages. Clock times are approximate; recording may cover only part of the night."
+        period.timing == .corroboratedBySleepSummary
+          ? "Time asleep across available stages. The timeline matches the ring’s sleep window; stage timing remains approximate."
+          : "Time asleep across available stages. Clock times are approximate; recording may cover only part of the night."
       )
       .font(.caption).foregroundStyle(Color.secondaryInk)
       Button(action: showSleep) {
