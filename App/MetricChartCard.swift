@@ -31,7 +31,8 @@ struct MetricPresentation: Identifiable {
       explanation: "Breaths per minute recorded while you sleep.", precision: 1),
     .init(
       kind: .oxygenSaturation, title: "Blood oxygen", unit: "%",
-      explanation: "Your ring’s estimate of blood oxygen saturation during recorded periods.",
+      explanation:
+        "Unvalidated ring oxygen readings. Gen 3 calibration is not yet verified; these values are not exported to Apple Health or suitable for interpreting oxygen levels.",
       precision: 0),
     .init(
       kind: .activityMET, title: "Activity intensity", unit: "MET",

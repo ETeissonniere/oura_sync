@@ -60,6 +60,10 @@ struct NightlyTrendsView: View {
             .font(.caption).foregroundStyle(Color.secondaryInk)
         }
         chart
+        if metric == .oxygen {
+          Text("Oxygen calibration is unverified. Not exported to Apple Health.")
+            .font(.caption).foregroundStyle(Color.secondaryInk)
+        }
         Text(
           metric == .temperature
             ? "Each point is one nightly skin-temperature estimate."

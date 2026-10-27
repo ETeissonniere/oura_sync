@@ -121,9 +121,6 @@ final class HealthExporter {
         case .heartRate, .respiratoryRate:
           unit = .count().unitDivided(by: .minute())
           value = measurement.value
-        case .oxygenSaturation:
-          unit = .percent()
-          value = measurement.value / 100
         case .hrvRMSSD:
           unit = .secondUnit(with: .milli)
           value = measurement.value
@@ -167,11 +164,11 @@ final class HealthExporter {
     return enabled
   }
 
-  private static var types: [MeasurementKind: HKSampleType] {
+  static var types: [MeasurementKind: HKSampleType] {
+    // Ring oxygen bytes lack verified calibration, so they must not enter Health.
     var types: [MeasurementKind: HKSampleType] = [
       .heartRate: HKQuantityType(.heartRate),
       .respiratoryRate: HKQuantityType(.respiratoryRate),
-      .oxygenSaturation: HKQuantityType(.oxygenSaturation),
       .inBed: HKCategoryType(.sleepAnalysis),
     ]
     if #available(iOS 27, *) { types[.hrvRMSSD] = HKQuantityType(.heartRateVariabilityRMSSD) }

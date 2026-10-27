@@ -23,6 +23,8 @@ struct NightlyVitalsView: View {
         vital("Average breathing rate", summary.respiratoryRate, unit: "breaths/min", precision: 1)
         Divider()
         vital("Average blood oxygen", summary.oxygenSaturation, unit: "%", precision: 1)
+        Text("Oxygen calibration is unverified. Not exported to Apple Health.")
+          .font(.caption).foregroundStyle(Color.secondaryInk)
         Divider()
         DetailRow(
           title: "Sleeping skin temperature",

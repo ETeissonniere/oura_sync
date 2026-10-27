@@ -27,10 +27,13 @@ Simulator screenshots and walkthrough use synthetic recordings, not personal hea
 
 This is an independent implementation, not a replacement for every Oura feature.
 
-- **Steps, calories, and automatic workouts:** not implemented. The research projects omit the proprietary model weights used by their activity pipeline. Activity intensity and movement recordings are available, but are not step counts. Independent estimates are possible; none are presented as measured steps.
+- **Steps, calories, and automatic workouts:** not implemented. Activity intensity and movement recordings are available, but are not step counts. `open_health` estimates displayed steps from fixed cadences at MET thresholds; we do not use that heuristic. Its model-based workout pipeline is separate and requires proprietary weights omitted from the repository.
 - **Advanced scores and predictions:** readiness, stress, resilience, cardiovascular age, fitness, and reproductive predictions are not implemented.
+- **Oxygen calibration:** raw recordings are retained, including values above 100. The current in-app charts use only values in 1–100 and carry an unvalidated-calibration warning; that filtering does not establish accuracy. Apple Health exports are disabled, including when permission was previously granted. We do not apply guessed offsets, clamps, or calibration formulas for other hardware. A personal baseline will not resolve an unknown sensor conversion. Re-enabling export requires a supported Gen 3 processing method and matching overnight reference recordings. Previously exported samples are not automatically deleted or corrected.
 - **Overnight measurements:** HRV, skin temperature, breathing, oxygen, and sleep records have been received from a Horizon Gen 3 after a night of wear. This confirms data availability, not sensor accuracy. Sleep-stage clock times are estimated, so stages are not exported to Apple Health. Charts preserve short stage changes rather than smoothing them away.
 - **Background sync:** iOS controls execution. Leave the app in the app switcher; force-quitting can prevent syncing. Controlled background transfers and a short locked-phone sync with Health export have passed; autonomous overnight reliability remains unverified. **My ring → Sync details** shows the latest actual foreground and background transfers. Foreground downloads continue until caught up; background downloads save progress within a limited execution window.
+
+Apple Health currently receives permitted heart-rate, respiratory-rate, RMSSD HRV (iOS 27+), and **in-bed** records. In-bed time is not time asleep. Finger skin temperature is not exported as body or Apple Watch wrist temperature. We do not export sleep stages, derived resting heart rate, steps, calories, or workouts. Raw history stays on the phone so decoding can improve without losing the original recordings.
 
 ## Run
 

@@ -29,6 +29,10 @@ struct RingView: View {
       Surface {
         Label("Apple Health", systemImage: "heart").font(.headline)
         Text(ring.health.status).font(.subheadline).foregroundStyle(Color.secondaryInk)
+        Text(
+          "Blood oxygen stays in Oura Sync and is withheld from Apple Health until its calibration is verified. Existing Health entries are unchanged."
+        )
+        .font(.caption).foregroundStyle(Color.secondaryInk)
         Button(ring.health.enabled ? "Review Health permissions" : "Connect Apple Health") {
           Task {
             await ring.health.enable()

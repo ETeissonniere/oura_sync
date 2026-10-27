@@ -6,6 +6,21 @@ import XCTest
 
 @MainActor
 final class HealthExporterTests: XCTestCase {
+  func testUncalibratedOxygenIsNeitherRequestedNorExportedEvenWithExistingPermission() async throws
+  {
+    XCTAssertNil(HealthExporter.types[.oxygenSaturation])
+    XCTAssertFalse(HealthExporter.types.values.contains(HKQuantityType(.oxygenSaturation)))
+    var samples: [HKSample] = []
+    let exporter = HealthExporter(
+      enabled: true, authorizationStatus: { _ in .sharingAuthorized },
+      save: { samples.append(contentsOf: $0) })
+    let oxygen = try measurement(id: "oxygen", kind: .oxygenSaturation, value: 97)
+    await exporter.export([oxygen])
+    let journal = try EventStore(url: temporaryJournalURL())
+    await exporter.export([oxygen], journal: journal)
+    XCTAssertTrue(samples.isEmpty)
+  }
+
   func testLargeSnapshotIsSavedInBoundedBatches() async throws {
     var batches: [[HKSample]] = []
     let exporter = HealthExporter(
@@ -31,7 +46,7 @@ final class HealthExporterTests: XCTestCase {
       enabled: true, authorizationStatus: { _ in .sharingAuthorized },
       save: { samples.append(contentsOf: $0) })
     let input = try [
-      measurement(id: "oxygen", kind: .oxygenSaturation, value: 97),
+      measurement(id: "respiration", kind: .respiratoryRate, value: 15),
       measurement(id: "rmssd", kind: .hrvRMSSD, value: 48),
       measurement(id: "bed", kind: .inBed, value: 1),
       measurement(id: "skin", kind: .skinTemperature, value: 33.4),
@@ -41,10 +56,12 @@ final class HealthExporterTests: XCTestCase {
     await exporter.export(input)
 
     XCTAssertEqual(samples.count, 3)
-    let oxygen = try XCTUnwrap(
-      samples.first { syncIdentifier($0) == "ourasync.oxygen" } as? HKQuantitySample)
-    XCTAssertEqual(oxygen.quantityType, HKQuantityType(.oxygenSaturation))
-    XCTAssertEqual(oxygen.quantity.doubleValue(for: .percent()), 0.97, accuracy: 0.000001)
+    let respiration = try XCTUnwrap(
+      samples.first { syncIdentifier($0) == "ourasync.respiration" } as? HKQuantitySample)
+    XCTAssertEqual(respiration.quantityType, HKQuantityType(.respiratoryRate))
+    XCTAssertEqual(
+      respiration.quantity.doubleValue(for: .count().unitDivided(by: .minute())), 15,
+      accuracy: 0.000001)
     let rmssd = try XCTUnwrap(
       samples.first { syncIdentifier($0) == "ourasync.rmssd" } as? HKQuantitySample)
     XCTAssertEqual(rmssd.quantityType, HKQuantityType(.heartRateVariabilityRMSSD))
@@ -169,24 +186,24 @@ final class HealthExporterTests: XCTestCase {
   }
 
   func testNewlyGrantedTypeExportsCachedReadingsWithoutAnotherRingSync() async throws {
-    var oxygenAllowed = false
+    var respirationAllowed = false
     var identifiers: [String] = []
     let exporter = HealthExporter(
       enabled: true,
       authorizationStatus: { type in
         type == HKQuantityType(.heartRate)
-          || (oxygenAllowed && type == HKQuantityType(.oxygenSaturation))
+          || (respirationAllowed && type == HKQuantityType(.respiratoryRate))
           ? .sharingAuthorized : .sharingDenied
       },
       save: { identifiers.append(contentsOf: $0.compactMap(self.syncIdentifier)) })
     let readings = try [
-      measurement(id: "heart"), measurement(id: "oxygen", kind: .oxygenSaturation, value: 97),
+      measurement(id: "heart"), measurement(id: "respiration", kind: .respiratoryRate, value: 15),
     ]
     await exporter.export(readings)
     XCTAssertEqual(identifiers, ["ourasync.heart"])
-    oxygenAllowed = true
+    respirationAllowed = true
     await exporter.retryPending(cachedMeasurements: readings)
-    XCTAssertEqual(identifiers, ["ourasync.heart", "ourasync.heart", "ourasync.oxygen"])
+    XCTAssertEqual(identifiers, ["ourasync.heart", "ourasync.heart", "ourasync.respiration"])
     await exporter.retryPending(cachedMeasurements: readings)
     XCTAssertEqual(identifiers.count, 3)
   }
@@ -253,24 +270,24 @@ final class HealthExporterTests: XCTestCase {
 
   func testJournalLeavesDeniedTypesPendingUntilPermissionIsGranted() async throws {
     let journal = try EventStore(url: temporaryJournalURL())
-    var oxygenAllowed = false
+    var respirationAllowed = false
     var saved: [String] = []
     let exporter = HealthExporter(
       enabled: true,
       authorizationStatus: { type in
         type == HKQuantityType(.heartRate)
-          || (oxygenAllowed && type == HKQuantityType(.oxygenSaturation))
+          || (respirationAllowed && type == HKQuantityType(.respiratoryRate))
           ? .sharingAuthorized : .sharingDenied
       },
       save: { saved.append(contentsOf: $0.compactMap(self.syncIdentifier)) })
     let readings = try [
-      measurement(id: "heart"), measurement(id: "oxygen", kind: .oxygenSaturation, value: 97),
+      measurement(id: "heart"), measurement(id: "respiration", kind: .respiratoryRate, value: 15),
     ]
     await exporter.export(readings, journal: journal)
     XCTAssertEqual(saved, ["ourasync.heart"])
-    oxygenAllowed = true
+    respirationAllowed = true
     await exporter.retryPending(cachedMeasurements: readings)
-    XCTAssertEqual(saved, ["ourasync.heart", "ourasync.oxygen"])
+    XCTAssertEqual(saved, ["ourasync.heart", "ourasync.respiration"])
     await exporter.export(readings, journal: journal)
     XCTAssertEqual(saved.count, 2)
   }
