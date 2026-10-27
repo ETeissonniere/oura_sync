@@ -103,7 +103,11 @@ struct RecordedSleepStagesView: View {
         .font(.subheadline).foregroundStyle(Color.secondaryInk)
       Text("Across the available stage recording")
         .font(.caption).foregroundStyle(Color.secondaryInk)
-      SleepStageChart(intervals: SleepChartStyle.intervals(for: period))
+      SleepStageChart(
+        intervals: SleepChartStyle.intervals(for: period),
+        accessibilitySummary: period.timing == .anchoredToSleepSummary
+          ? "Ring sleep stages, timed from the ring’s sleep summary."
+          : "Ring sleep stages. Clock times are approximate.")
       ForEach(SleepChartStyle.stages, id: \.self) { stage in
         HStack(spacing: 10) {
           RoundedRectangle(cornerRadius: 3).fill(SleepChartStyle.color(stage, scheme: colorScheme))
@@ -115,8 +119,8 @@ struct RecordedSleepStagesView: View {
         .font(.subheadline).accessibilityElement(children: .combine)
       }
       Text(
-        period.timing == .corroboratedBySleepSummary
-          ? "Stages reported by your ring, positioned using its sleep summary and matching bedtime window. Stage timing remains approximate and is not exported to Apple Health."
+        period.timing == .anchoredToSleepSummary
+          ? "Stages reported by your ring, timed from its sleep summary. Complete recordings can sync to Apple Health when sleep access is allowed."
           : "Stages reported by your ring. Clock times are estimated from when its analysis finished; this recording may cover only part of your night."
       )
       .font(.caption).foregroundStyle(Color.secondaryInk)

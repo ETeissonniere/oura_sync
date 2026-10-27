@@ -93,15 +93,24 @@
         let sleepEnd = counter - 3_600 - UInt32(day * 864_000)
         let denseSleep = day == 0 && ProcessInfo.processInfo.arguments.contains("--dense-sleep")
         let pageCount = denseSleep ? 20 : 16 - day * 2
+        let anchored = day == 0 && ProcessInfo.processInfo.arguments.contains("--anchored-sleep")
+        let sleepMinutes = pageCount * 26 - (anchored ? 16 : 0)
         let denseBytes = denseSleep ? Self.denseSleepBytes() : []
         events.append(
           Self.event(
             0x76, sleepEnd,
-            Self.bytes(sleepEnd - UInt32(pageCount * 26 * 600)) + Self.bytes(sleepEnd)))
+            Self.bytes(sleepEnd - UInt32(sleepMinutes * 600)) + Self.bytes(sleepEnd)))
         if ProcessInfo.processInfo.arguments.contains("--no-sleep-stages")
           || (day == 0 && ProcessInfo.processInfo.arguments.contains("--latest-missing-stages"))
         {
           continue
+        }
+        if anchored {
+          let startOffset = UInt16(sleepMinutes)
+          events.append(
+            Self.event(
+              0x49, sleepEnd,
+              [UInt8(truncatingIfNeeded: startOffset), UInt8(startOffset >> 8), 0, 0]))
         }
         for page in 0..<pageCount {
           let packed: UInt8 = [0x55, 0x00, 0x55, 0xaa, 0x55, 0xff, 0x55, 0xaa][page % 8]
@@ -110,7 +119,11 @@
             ? Array(denseBytes[(page * 13)..<((page + 1) * 13)])
             : Array(repeating: packed, count: 13)
           events.append(
-            Self.event(0x5a, sleepEnd, [UInt8(page)] + body))
+            Self.event(0x5a, sleepEnd + (anchored ? UInt32(page + 1) : 0), [UInt8(page)] + body))
+        }
+        if anchored {
+          events.append(
+            Self.event(0x4c, sleepEnd + UInt32(pageCount + 1), Array(repeating: 0, count: 14)))
         }
       }
       if ProcessInfo.processInfo.arguments.contains("--nightly-trends") {

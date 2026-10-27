@@ -16,10 +16,14 @@ struct RecordedSleepSummary: View {
         .font(.system(.largeTitle, design: .rounded)).tracking(-1)
       Text(period.start.formatted(date: .abbreviated, time: .omitted))
         .font(.subheadline).foregroundStyle(Color.secondaryInk)
-      SleepStageChart(intervals: SleepChartStyle.intervals(for: period))
+      SleepStageChart(
+        intervals: SleepChartStyle.intervals(for: period),
+        accessibilitySummary: period.timing == .anchoredToSleepSummary
+          ? "Ring sleep stages, timed from the ring’s sleep summary."
+          : "Ring sleep stages. Clock times are approximate.")
       Text(
-        period.timing == .corroboratedBySleepSummary
-          ? "Time asleep across available stages. The timeline matches the ring’s sleep window; stage timing remains approximate."
+        period.timing == .anchoredToSleepSummary
+          ? "Time asleep across the ring’s completed stage recording. Awake time is shown separately."
           : "Time asleep across available stages. Clock times are approximate; recording may cover only part of the night."
       )
       .font(.caption).foregroundStyle(Color.secondaryInk)

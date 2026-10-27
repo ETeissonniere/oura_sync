@@ -53,7 +53,7 @@ enum SleepChartStyle {
 struct SleepStageChart: View {
   let intervals: [SleepChartInterval]
   var timeZone: TimeZone = .current
-  var approximateTimes = true
+  var accessibilitySummary = "Ring sleep stages. Clock times are approximate."
   @Environment(\.colorScheme) private var colorScheme
   @ScaledMetric(relativeTo: .caption) private var chartHeight = 240.0
 
@@ -164,8 +164,6 @@ struct SleepStageChart: View {
     }
     .frame(height: chartHeight)
     .id(colorScheme)
-    .accessibilityLabel(
-      approximateTimes
-        ? "Ring sleep stages. Clock times are approximate." : "Illustrative sleep stages")
+    .accessibilityLabel(accessibilitySummary)
   }
 }

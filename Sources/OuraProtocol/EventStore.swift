@@ -43,6 +43,10 @@ public actor EventStore {
         id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
         version INTEGER NOT NULL, completed INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS health_sleep_exports (
+        id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
+        version INTEGER NOT NULL, completed INTEGER NOT NULL
+      );
       """
     guard sqlite3_exec(connection.handle, schema, nil, nil, nil) == SQLITE_OK else {
       throw Failure(message: "Could not initialize the ring history database.")
@@ -238,6 +242,62 @@ public actor EventStore {
       try? execute("ROLLBACK")
       throw error
     }
+  }
+
+  public func prepareSleepHealthExport(_ period: SleepStagePeriod) throws
+    -> SleepHealthExportRecord?
+  {
+    guard period.timing == .anchoredToSleepSummary else { return nil }
+    struct Epoch: Encodable {
+      let id: String
+      let stage: SleepStage
+      let start: Date
+      let end: Date
+    }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let data = try encoder.encode(
+      period.epochs.map {
+        Epoch(id: $0.id, stage: $0.stage, start: $0.start, end: $0.end)
+      })
+    let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    let lookup = try prepare(
+      "SELECT fingerprint, version, completed FROM health_sleep_exports WHERE id = ?")
+    defer { sqlite3_finalize(lookup) }
+    try bind(period.id, to: lookup, index: 1)
+    let result = sqlite3_step(lookup)
+    var version = 1
+    if result == SQLITE_ROW {
+      guard let text = sqlite3_column_text(lookup, 0),
+        let previousVersion = Int(exactly: sqlite3_column_int64(lookup, 1)),
+        previousVersion > 0, previousVersion < Int.max
+      else { throw failure() }
+      let unchanged = String(cString: text) == fingerprint
+      if unchanged && sqlite3_column_int(lookup, 2) == 1 { return nil }
+      version = unchanged ? previousVersion : previousVersion + 1
+    } else if result != SQLITE_DONE {
+      throw failure()
+    }
+    let update = try prepare(
+      "INSERT INTO health_sleep_exports(id, fingerprint, version, completed) VALUES (?, ?, ?, 0) ON CONFLICT(id) DO UPDATE SET fingerprint = excluded.fingerprint, version = excluded.version, completed = 0"
+    )
+    defer { sqlite3_finalize(update) }
+    try bind(period.id, to: update, index: 1)
+    try bind(fingerprint, to: update, index: 2)
+    guard sqlite3_bind_int64(update, 3, Int64(version)) == SQLITE_OK,
+      sqlite3_step(update) == SQLITE_DONE
+    else { throw failure() }
+    return SleepHealthExportRecord(period: period, version: version)
+  }
+
+  public func completeSleepHealthExport(_ record: SleepHealthExportRecord) throws {
+    let statement = try prepare(
+      "UPDATE health_sleep_exports SET completed = 1 WHERE id = ? AND version = ?")
+    defer { sqlite3_finalize(statement) }
+    try bind(record.period.id, to: statement, index: 1)
+    guard sqlite3_bind_int64(statement, 2, Int64(record.version)) == SQLITE_OK,
+      sqlite3_step(statement) == SQLITE_DONE
+    else { throw failure() }
   }
 
   private func prepare(_ sql: String) throws -> OpaquePointer {

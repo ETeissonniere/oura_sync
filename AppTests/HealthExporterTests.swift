@@ -292,6 +292,141 @@ final class HealthExporterTests: XCTestCase {
     XCTAssertEqual(saved.count, 2)
   }
 
+  func testSleepExportMapsStagesAndReplacesShorterNightWithoutDuplicates() async throws {
+    let journal = try EventStore(url: temporaryJournalURL())
+    var saved: [String: HKSample] = [:]
+    var deletions: [String] = []
+    let exporter = HealthExporter(
+      enabled: true, authorizationStatus: { _ in .sharingAuthorized },
+      save: { batch in for sample in batch { saved[self.syncIdentifier(sample)!] = sample } },
+      deleteSleepNight: { night in
+        deletions.append(night)
+        saved = saved.filter { $0.value.metadata?["OuraSyncSleepNight"] as? String != night }
+      })
+    let original = try sleepPeriod(minutes: 26)
+    await exporter.export([], sleepPeriods: [original], journal: journal)
+    XCTAssertEqual(saved.count, 52)
+    XCTAssertEqual(
+      Set(saved.values.compactMap { ($0 as? HKCategorySample)?.value }),
+      Set([
+        HKCategoryValueSleepAnalysis.asleepDeep.rawValue,
+        HKCategoryValueSleepAnalysis.asleepCore.rawValue,
+        HKCategoryValueSleepAnalysis.asleepREM.rawValue,
+        HKCategoryValueSleepAnalysis.awake.rawValue,
+      ]))
+    await exporter.export([], sleepPeriods: [original], journal: journal)
+    XCTAssertEqual(deletions.count, 1)
+    let shorter = try sleepPeriod(minutes: 24)
+    XCTAssertEqual(shorter.id, original.id)
+    await exporter.export([], sleepPeriods: [shorter], journal: journal)
+    XCTAssertEqual(saved.count, 48)
+    XCTAssertEqual(deletions.count, 2)
+    XCTAssertTrue(saved.values.allSatisfy { $0.endDate <= shorter.end })
+    XCTAssertTrue(saved.values.allSatisfy { $0.metadata?[HKMetadataKeySyncVersion] as? Int == 2 })
+    await exporter.export([], sleepPeriods: [], journal: journal)
+    XCTAssertEqual(saved.count, 48, "An absent/partial snapshot is not authoritative invalidation")
+  }
+
+  func testSleepReplacementRetriesDeletionAndPartialSaves() async throws {
+    let journal = try EventStore(url: temporaryJournalURL())
+    var deletionFails = true
+    var saveCalls = 0
+    var deletes = 0
+    var saved: [String: HKSample] = [:]
+    let exporter = HealthExporter(
+      enabled: true, authorizationStatus: { _ in .sharingAuthorized },
+      save: { batch in
+        saveCalls += 1
+        if saveCalls == 2 { throw CocoaError(.fileWriteUnknown) }
+        for sample in batch { saved[self.syncIdentifier(sample)!] = sample }
+      },
+      deleteSleepNight: { _ in
+        deletes += 1
+        if deletionFails { throw CocoaError(.fileWriteUnknown) }
+        saved.removeAll()
+      })
+    let period = try sleepPeriod(minutes: 286)
+    await exporter.export([], sleepPeriods: [period], journal: journal)
+    XCTAssertEqual(saveCalls, 0)
+    deletionFails = false
+    await exporter.retryPending()
+    XCTAssertEqual(saved.count, 500)
+    await exporter.retryPending()
+    XCTAssertEqual(saved.count, period.epochs.count)
+    XCTAssertEqual(deletes, 3)
+    XCTAssertTrue(saved.values.allSatisfy { $0.metadata?[HKMetadataKeySyncVersion] as? Int == 1 })
+    await exporter.export([], sleepPeriods: [period], journal: journal)
+    XCTAssertEqual(deletes, 3)
+  }
+
+  func testSleepPermissionRevocationStopsRemainingBatchesAndRetriesAfterGrant() async throws {
+    let journal = try EventStore(url: temporaryJournalURL())
+    var allowed = true
+    var batchCounts: [Int] = []
+    var deletes = 0
+    let exporter = HealthExporter(
+      enabled: true,
+      authorizationStatus: { _ in allowed ? .sharingAuthorized : .sharingDenied },
+      save: { batch in
+        batchCounts.append(batch.count)
+        if batchCounts.count == 1 { allowed = false }
+      }, deleteSleepNight: { _ in deletes += 1 })
+    let period = try sleepPeriod(minutes: 286)
+    await exporter.export([], sleepPeriods: [period], journal: journal)
+    XCTAssertEqual(batchCounts, [500])
+    XCTAssertEqual(exporter.status, "Sleep export pending: Health write access is off")
+    allowed = true
+    await exporter.retryPending()
+    XCTAssertEqual(batchCounts, [500, 500, 72])
+    XCTAssertEqual(deletes, 2)
+  }
+
+  func testEstimatedSleepIsNotExported() async throws {
+    let journal = try EventStore(url: temporaryJournalURL())
+    var saved = 0
+    var deleted = 0
+    let exporter = HealthExporter(
+      enabled: true, authorizationStatus: { _ in .sharingAuthorized },
+      save: { saved += $0.count }, deleteSleepNight: { _ in deleted += 1 })
+    let period = try sleepPeriod(minutes: 26, finalized: false)
+    XCTAssertNotEqual(period.timing, .anchoredToSleepSummary)
+    await exporter.export([], sleepPeriods: [period], journal: journal)
+    XCTAssertEqual(saved, 0)
+    XCTAssertEqual(deleted, 0)
+  }
+
+  private func sleepPeriod(minutes: UInt32, finalized: Bool = true) throws -> SleepStagePeriod {
+    func bytes(_ value: UInt32) -> [UInt8] {
+      (0..<4).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }
+    }
+    func event(_ tag: UInt8, _ time: UInt32, _ body: [UInt8]) throws -> RingEvent {
+      try RingEvent(packet: Packet(tag: tag, payload: bytes(time) + body))
+    }
+    let start: UInt32 = 100_000
+    let summary = start + (minutes + 1) * 600
+    let offset = minutes + 1
+    var events = try [
+      event(0x42, 80_000, bytes(1_789_998_000)),
+      event(0x49, summary, [UInt8(truncatingIfNeeded: offset), UInt8(offset >> 8), 1, 0]),
+      event(0x76, summary, bytes(start) + bytes(start + minutes * 600)),
+    ]
+    let pages = Int((minutes + 25) / 26)
+    for page in 0..<pages {
+      events.append(
+        try event(
+          0x5a, summary + 100 + UInt32(page), [UInt8(page)] + Array(repeating: 0x1b, count: 13)))
+    }
+    if finalized {
+      events.append(try event(0x4c, summary + 100 + UInt32(pages), Array(repeating: 0, count: 14)))
+    }
+    return try XCTUnwrap(
+      SleepStages(
+        events: events,
+        session: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+        now: Date(timeIntervalSince1970: 1_790_100_000)
+      ).periods.first)
+  }
+
   private func temporaryJournalURL() throws -> URL {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -337,5 +472,33 @@ private final class SaveGate {
   func resume() {
     saveContinuation?.resume()
     saveContinuation = nil
+  }
+}
+
+extension HealthExporterTests {
+  func testPausingSleepReplacementKeepsJournalPendingAndStopsRemainingBatches() async throws {
+    let preference = UserDefaults.standard.object(forKey: "health.enabled")
+    defer { UserDefaults.standard.set(preference, forKey: "health.enabled") }
+    let journal = try EventStore(url: temporaryJournalURL())
+    let period = try sleepPeriod(minutes: 286)
+    let gate = SaveGate()
+    var batches: [Int] = []
+    let exporter = HealthExporter(
+      enabled: true, authorizationStatus: { _ in .sharingAuthorized },
+      save: { samples in
+        batches.append(samples.count)
+        await gate.suspendFirstSave()
+      }, deleteSleepNight: { _ in })
+    let task = Task { await exporter.export([], sleepPeriods: [period], journal: journal) }
+    await gate.waitUntilSuspended()
+    exporter.pause()
+    gate.resume()
+    await task.value
+    XCTAssertEqual(batches, [500])
+    XCTAssertEqual(exporter.status, "Export paused. Existing Health data is unchanged.")
+    let pending = try await journal.prepareSleepHealthExport(period)
+    XCTAssertNotNil(pending)
+    await exporter.retryPending()
+    XCTAssertEqual(batches, [500])
   }
 }

@@ -415,7 +415,7 @@ final class RingCoordinator {
     if measurements.isEmpty {
       await refreshMeasurements()
     } else {
-      await health.retryPending(cachedMeasurements: measurements)
+      await health.retryPending(cachedMeasurements: measurements, cachedSleepPeriods: sleepPeriods)
     }
   }
 
@@ -433,7 +433,7 @@ final class RingCoordinator {
       sleepPeriods = history.sleepPeriods
       nightlyVitals = history.nightlyVitals
       undatedEvents = history.undatedEvents
-      await health.export(measurements, journal: store)
+      await health.export(measurements, sleepPeriods: sleepPeriods, journal: store)
     } catch {
       if !Task.isCancelled, generation == refreshGeneration, self.pairing?.session == session {
         self.error = "Could not load saved measurements: \(error.localizedDescription)"

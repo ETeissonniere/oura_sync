@@ -189,6 +189,23 @@ final class OuraSyncUITests: XCTestCase {
     attachScreenshot("Sample sleep design")
   }
 
+  func testCompletedSleepExplainsFirmwareTimingAndHealthEligibility() {
+    let app = XCUIApplication()
+    app.launchArguments = [
+      "--recorded", "--nightly-vitals-only", "--dense-sleep", "--anchored-sleep",
+    ]
+    app.launch()
+    XCTAssertTrue(app.staticTexts["RECORDED SLEEP"].waitForExistence(timeout: 10))
+    let explanation = app.staticTexts.matching(
+      NSPredicate(
+        format: "label == %@",
+        "Stages reported by your ring, timed from its sleep summary. Complete recordings can sync to Apple Health when sleep access is allowed.")
+    ).firstMatch
+    reveal(explanation, in: app)
+    XCTAssertTrue(explanation.exists)
+    attachScreenshot("Completed firmware sleep timeline")
+  }
+
   func testDenseSleepStagesRemainReadable() {
     let app = XCUIApplication()
     app.launchArguments = ["--recorded", "--nightly-vitals-only", "--dense-sleep"]

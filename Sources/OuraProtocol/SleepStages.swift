@@ -15,7 +15,7 @@ public struct SleepStageEpoch: Identifiable, Equatable, Sendable {
 public struct SleepStagePeriod: Identifiable, Equatable, Sendable {
   public enum Timing: String, Sendable {
     case estimatedFromAnalysisCompletion
-    case corroboratedBySleepSummary
+    case anchoredToSleepSummary
   }
 
   public let id: String
@@ -24,8 +24,8 @@ public struct SleepStagePeriod: Identifiable, Equatable, Sendable {
   public let end: Date
   public let epochs: [SleepStageEpoch]
   public let recordedBedtime: DateInterval?
-  // Summary agreement improves display timing; it does not validate the stage
-  // classifier or establish that these stages are safe to export to Health.
+  // Anchored periods have complete, finalized firmware stages and a checked
+  // summary window. This establishes their timing, not clinical accuracy.
   public let timing: Timing
 }
 
@@ -44,6 +44,7 @@ public struct SleepStages: Sendable {
       }.sorted { $0.counter < $1.counter }
     let bedtimes = BedtimeWindow.latest(in: events)
     let summaries = Set(events.filter { $0.tag == 0x49 })
+    let finalizations = Set(events.filter { $0.tag == 0x4c })
     var runs: [[RingEvent]] = []
     var seen = Set<RingEvent>()
     let pages = events.enumerated().filter { $0.element.tag == 0x5a }.sorted {
@@ -63,7 +64,7 @@ public struct SleepStages: Sendable {
       .mapValues(\.count)
     var rejected = 0
     var undated = 0
-    for run in runs {
+    for (runIndex, run) in runs.enumerated() {
       guard let first = run.first, let last = run.last,
         runCounts[first.timestamp] == 1,
         run.enumerated().allSatisfy({
@@ -75,15 +76,16 @@ public struct SleepStages: Sendable {
       }
       // Horizon pages carry 52 thirty-second epochs, with MSB-first two-bit
       // codes. Their event timestamps mark analysis output, not epoch times.
-      let stageCount = run.count * 52
+      var stageCount = run.count * 52
       var endCounter = Int64(last.timestamp)
       var startCounter = endCounter - Int64(stageCount) * 300
       var corroboratingBedtime: BedtimeWindow?
+      var summaryClockAnchor: (counter: Int64, unix: TimeInterval)?
       // A nearby summary must be unique before inspecting its coverage: picking
       // whichever competing summary fits would hide an ambiguous association.
       let nearbySummaries = summaries.filter {
         Int64($0.timestamp) >= Int64(first.timestamp) - 6_000
-          && Int64($0.timestamp) <= Int64(last.timestamp) + 6_000
+          && $0.timestamp < first.timestamp
       }
       if nearbySummaries.count == 1, let summary = nearbySummaries.first,
         summary.body.count == 4
@@ -93,16 +95,43 @@ public struct SleepStages: Sendable {
         let endMinutes = Int64(bytes[2]) | (Int64(bytes[3]) << 8)
         let summaryStart = Int64(summary.timestamp) - startMinutes * 600
         let summaryEnd = Int64(summary.timestamp) - endMinutes * 600
+        let validEpochs = (startMinutes - endMinutes) * 2
+        let nextRun = runs.dropFirst(runIndex + 1).first?.first?.timestamp ?? UInt32.max
+        let nextSummary =
+          summaries.filter { $0.timestamp > summary.timestamp }
+          .map(\.timestamp).min() ?? UInt32.max
+        let endings = finalizations.filter {
+          $0.timestamp > last.timestamp && $0.timestamp < min(nextRun, nextSummary)
+            && Int64($0.timestamp) <= Int64(last.timestamp) + 6_000
+        }
         let matchingBedtimes = bedtimes.filter {
           abs($0.start - summaryStart) <= 600 && abs($0.end - summaryEnd) <= 600
         }
         if summaryStart >= 0, startMinutes > endMinutes,
-          summaryEnd - summaryStart == Int64(stageCount) * 300,
-          matchingBedtimes.count == 1
+          startMinutes <= 0x7ff, endMinutes <= 0x7ff,
+          validEpochs <= 16 * 60 * 2, run.count <= 36,
+          (validEpochs + 51) / 52 == Int64(run.count),
+          endings.count == 1, endings.first?.body.count == 14,
+          matchingBedtimes.count == 1, let window = matchingBedtimes.first,
+          let summaryAnchor = anchors.last(where: { $0.counter <= Int64(summary.timestamp) })
+            ?? anchors.first,
+          let bedtimeAnchor = anchors.last(where: { $0.counter <= window.end }) ?? anchors.first,
+          abs(
+            summaryAnchor.unix + Double(summaryStart - summaryAnchor.counter) / 10
+              - bedtimeAnchor.unix - Double(window.start - bedtimeAnchor.counter) / 10) <= 60,
+          abs(
+            summaryAnchor.unix + Double(summaryEnd - summaryAnchor.counter) / 10
+              - bedtimeAnchor.unix - Double(window.end - bedtimeAnchor.counter) / 10) <= 60
         {
+          // Oura 7.15 native sleepinfo consumer: 0x11290c anchors at summary
+          // start; 0x112c9c divides duration by 30; 0x113488 truncates by count.
+          // libappecore SHA-256: 0fefc6a53b2ec9a09ce4081ff3a91807f29b7af788aab1a8885f8f8cdc8548e9.
+          // Unused final-page slots are ignored regardless of their stage code.
+          stageCount = Int(validEpochs)
           startCounter = summaryStart
           endCounter = summaryEnd
-          corroboratingBedtime = matchingBedtimes.first
+          corroboratingBedtime = window
+          summaryClockAnchor = summaryAnchor
         }
       }
       // Pages are emitted in an analysis burst. A separation longer than one
@@ -114,10 +143,11 @@ public struct SleepStages: Sendable {
         rejected += 1
         continue
       }
-      // Summary offsets are rounded to minutes. Use the bedtime's clock anchor
-      // for both windows so a correction between their ends cannot split them.
-      let anchorCounter = corroboratingBedtime?.end ?? endCounter
-      guard let anchor = anchors.last(where: { $0.counter <= anchorCounter }) ?? anchors.first
+      // The native consumer subtracts offsets from the summary event's mapped
+      // UTC time. Preserve its clock correction only when bedtime still agrees.
+      guard
+        let anchor = summaryClockAnchor
+          ?? anchors.last(where: { $0.counter <= endCounter }) ?? anchors.first
       else {
         undated += 1
         continue
@@ -142,6 +172,7 @@ public struct SleepStages: Sendable {
         for byte in page.body.dropFirst() {
           for shift in [6, 4, 2, 0] {
             let index = epochs.count
+            guard index < stageCount else { continue }
             let epochStart = start.addingTimeInterval(Double(index) * 30)
             epochs.append(
               SleepStageEpoch(
@@ -178,15 +209,15 @@ public struct SleepStages: Sendable {
           id: id, session: session, start: start, end: end, epochs: epochs,
           recordedBedtime: bedtime,
           timing: corroboratingBedtime == nil
-            ? .estimatedFromAnalysisCompletion : .corroboratedBySleepSummary
+            ? .estimatedFromAnalysisCompletion : .anchoredToSleepSummary
         ))
     }
     // A partial re-analysis must not displace a corroborated night while its
     // remaining pages are still arriving.
-    let corroboratedBedtimes = result.filter { $0.timing == .corroboratedBySleepSummary }
+    let corroboratedBedtimes = result.filter { $0.timing == .anchoredToSleepSummary }
       .compactMap(\.recordedBedtime)
     periods = result.filter {
-      $0.timing == .corroboratedBySleepSummary
+      $0.timing == .anchoredToSleepSummary
         || $0.recordedBedtime.map { !corroboratedBedtimes.contains($0) } ?? true
     }
     rejectedRuns = rejected

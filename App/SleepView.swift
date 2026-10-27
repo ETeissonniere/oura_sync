@@ -30,10 +30,11 @@ struct SleepTimeline: View {
 
   var body: some View {
     VStack(spacing: 10) {
-      SleepStageChart(intervals: intervals, timeZone: .gmt, approximateTimes: false)
-        .accessibilityLabel(
+      SleepStageChart(
+        intervals: intervals, timeZone: .gmt,
+        accessibilitySummary:
           "Illustrative sleep stages from \(PreviewData.bedtimeLabel) to \(PreviewData.wakeTimeLabel)"
-        )
+      )
       HStack {
         Text(PreviewData.bedtimeLabel)
         Spacer()
