@@ -107,10 +107,19 @@ final class RingTransport: NSObject {
         self.operationID = operationID
         connection = continuation
         armTimeout(seconds: 45)
-        if ring.state == .connected {
+        switch ring.state {
+        case .connected:
           ring.discoverServices([CBUUID(string: Commands.service)])
-        } else {
+        case .disconnected:
           central.connect(ring)
+        case .connecting:
+          // Automatic restoration may already own the connection attempt,
+          // including its CoreBluetooth-managed delay. Await that callback.
+          break
+        case .disconnecting:
+          fail(Failure.disconnected)
+        @unknown default:
+          fail(Failure.disconnected)
         }
       }
     } onCancel: {
