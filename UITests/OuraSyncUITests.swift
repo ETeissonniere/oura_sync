@@ -210,6 +210,21 @@ final class OuraSyncUITests: XCTestCase {
     attachScreenshot("Completed firmware sleep timeline")
   }
 
+  func testShortFinalizedSleepLeavesUnrecordedTailVisible() {
+    let app = XCUIApplication()
+    app.launchArguments = [
+      "--recorded", "--nightly-vitals-only", "--anchored-sleep", "--short-sleep-tail",
+    ]
+    app.launch()
+    XCTAssertTrue(app.staticTexts["RECORDED SLEEP"].waitForExistence(timeout: 10))
+    let gap = app.staticTexts[
+      "9 min at the end have no recorded stages. This gap stays blank and is not exported to Apple Health."
+    ]
+    reveal(gap, in: app)
+    XCTAssertTrue(gap.exists)
+    attachScreenshot("Finalized sleep with unrecorded tail")
+  }
+
   func testDenseSleepStagesRemainReadable() {
     let app = XCUIApplication()
     app.launchArguments = ["--recorded", "--nightly-vitals-only", "--dense-sleep"]

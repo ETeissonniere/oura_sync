@@ -24,9 +24,14 @@ public struct SleepStagePeriod: Identifiable, Equatable, Sendable {
   public let end: Date
   public let epochs: [SleepStageEpoch]
   public let recordedBedtime: DateInterval?
-  // Anchored periods have complete, finalized firmware stages and a checked
+  // Anchored periods have corroborated, finalized firmware stages and a checked
   // summary window. This establishes their timing, not clinical accuracy.
   public let timing: Timing
+  public internal(set) var supersededIDs: [String] = []
+
+  public var unrecordedTail: TimeInterval {
+    max(0, end.timeIntervalSince(epochs.last?.end ?? end))
+  }
 }
 
 public struct SleepStages: Sendable {
@@ -107,10 +112,27 @@ public struct SleepStages: Sendable {
         let matchingBedtimes = bedtimes.filter {
           abs($0.start - summaryStart) <= 600 && abs($0.end - summaryEnd) <= 600
         }
+        let suppliedEpochs = run.count * 52
+        let deficit = Int(validEpochs) - suppliedEpochs
+        let finalBytes = endings.first.map { Array($0.body) } ?? []
+        var counts = [0, 0, 0, 0]
+        for page in run {
+          for byte in page.body.dropFirst() {
+            for shift in [6, 4, 2, 0] { counts[Int((byte >> shift) & 3)] += 1 }
+          }
+        }
+        // The native consumer fills a short final page with awake stages.
+        // Keep only recorded epochs instead, after the finalized non-awake
+        // totals corroborate the supplied pages. Never infer awake physiology.
+        let shortFinalRun =
+          deficit > 0 && deficit < 52 && finalBytes.count == 14
+          && counts[2] == Int(finalBytes[2]) + Int(finalBytes[3]) * 256
+          && counts[1] == Int(finalBytes[4]) + Int(finalBytes[5]) * 256
+          && counts[0] == Int(finalBytes[6]) + Int(finalBytes[7]) * 256
         if summaryStart >= 0, startMinutes > endMinutes,
           startMinutes <= 0x7ff, endMinutes <= 0x7ff,
           validEpochs <= 16 * 60 * 2, run.count <= 36,
-          (validEpochs + 51) / 52 == Int64(run.count),
+          (validEpochs + 51) / 52 == Int64(run.count) || shortFinalRun,
           endings.count == 1, endings.first?.body.count == 14,
           matchingBedtimes.count == 1, let window = matchingBedtimes.first,
           let summaryAnchor = anchors.last(where: { $0.counter <= Int64(summary.timestamp) })
@@ -127,7 +149,7 @@ public struct SleepStages: Sendable {
           // start; 0x112c9c divides duration by 30; 0x113488 truncates by count.
           // libappecore SHA-256: 0fefc6a53b2ec9a09ce4081ff3a91807f29b7af788aab1a8885f8f8cdc8548e9.
           // Unused final-page slots are ignored regardless of their stage code.
-          stageCount = Int(validEpochs)
+          stageCount = min(Int(validEpochs), suppliedEpochs)
           startCounter = summaryStart
           endCounter = summaryEnd
           corroboratingBedtime = window
@@ -164,7 +186,7 @@ public struct SleepStages: Sendable {
       }
       let fingerprint = SHA256.hash(data: first.body).map { String(format: "%02x", $0) }.joined()
       let id =
-        corroboratingBedtime.map { "\(session.uuidString).sleep.bed.\($0.start)" }
+        corroboratingBedtime.map { "\(session.uuidString).sleep.bed.\($0.identityStart)" }
         ?? "\(session.uuidString).sleep.\(first.timestamp).\(fingerprint)"
       var epochs: [SleepStageEpoch] = []
       let stages: [SleepStage] = [.deep, .light, .rem, .awake]
@@ -209,7 +231,10 @@ public struct SleepStages: Sendable {
           id: id, session: session, start: start, end: end, epochs: epochs,
           recordedBedtime: bedtime,
           timing: corroboratingBedtime == nil
-            ? .estimatedFromAnalysisCompletion : .anchoredToSleepSummary
+            ? .estimatedFromAnalysisCompletion : .anchoredToSleepSummary,
+          supersededIDs: corroboratingBedtime?.supersededStarts.map {
+            "\(session.uuidString).sleep.bed.\($0)"
+          } ?? []
         ))
     }
     // A partial re-analysis must not displace a corroborated night while its

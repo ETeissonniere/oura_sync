@@ -52,6 +52,7 @@ enum SleepChartStyle {
 
 struct SleepStageChart: View {
   let intervals: [SleepChartInterval]
+  var timeRange: ClosedRange<Date>?
   var timeZone: TimeZone = .current
   var accessibilitySummary = "Ring sleep stages. Clock times are approximate."
   @Environment(\.colorScheme) private var colorScheme
@@ -76,14 +77,21 @@ struct SleepStageChart: View {
     Date.FormatStyle(date: .omitted, time: .shortened, timeZone: timeZone)
   }
 
+  private var domain: ClosedRange<Date> {
+    if let timeRange { return timeRange }
+    let start = intervals.first?.start ?? .distantPast
+    return start...max(start.addingTimeInterval(1), intervals.last?.end ?? start)
+  }
+
   private var timeTicks: [Date] {
-    guard let first = intervals.first, let last = intervals.last else { return [] }
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = timeZone
-    guard var hour = calendar.dateInterval(of: .hour, for: first.start)?.start else { return [] }
+    guard var hour = calendar.dateInterval(of: .hour, for: domain.lowerBound)?.start else {
+      return []
+    }
     var ticks: [Date] = []
-    while hour <= last.end {
-      if hour >= first.start, calendar.component(.hour, from: hour).isMultiple(of: 2) {
+    while hour <= domain.upperBound {
+      if hour >= domain.lowerBound, calendar.component(.hour, from: hour).isMultiple(of: 2) {
         ticks.append(hour)
       }
       guard let next = calendar.date(byAdding: .hour, value: 1, to: hour), next > hour else {
@@ -91,7 +99,7 @@ struct SleepStageChart: View {
       }
       hour = next
     }
-    return ticks.count >= 2 ? ticks : [first.start, last.end]
+    return ticks.count >= 2 ? ticks : [domain.lowerBound, domain.upperBound]
   }
 
   var body: some View {
@@ -135,6 +143,7 @@ struct SleepStageChart: View {
         )
       }
     }
+    .chartXScale(domain: domain)
     .chartYScale(domain: -0.5...3.5)
     .chartXAxis {
       AxisMarks(values: timeTicks) {

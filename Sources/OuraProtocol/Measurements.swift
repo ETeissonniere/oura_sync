@@ -174,7 +174,7 @@ public struct Measurements: Sendable {
       // A detected bedtime interval alone does not establish sleep stages.
       result.append(
         Measurement(
-          id: "\(session.uuidString).bed.\(bedtime.start)", kind: .inBed,
+          id: "\(session.uuidString).bed.\(bedtime.identityStart)", kind: .inBed,
           start: window.start, end: window.end, value: 1))
     }
     samples = result.sorted { $0.start < $1.start }

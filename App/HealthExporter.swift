@@ -13,6 +13,7 @@ final class HealthExporter {
     @MainActor (HKObjectType) -> HKAuthorizationStatus
   @ObservationIgnored private let save: @MainActor ([HKSample]) async throws -> Void
   @ObservationIgnored private let deleteSleepNight: @MainActor (String) async throws -> Void
+  @ObservationIgnored private let retireSleepNight: @MainActor (String) async throws -> Void
   @ObservationIgnored private var pendingMeasurements: [OuraProtocol.Measurement]?
   @ObservationIgnored private var pendingSleepPeriods: [SleepStagePeriod] = []
   @ObservationIgnored private var lastExportPermissions = Set<MeasurementKind>()
@@ -22,7 +23,8 @@ final class HealthExporter {
     enabled: Bool? = nil,
     authorizationStatus: (@MainActor (HKObjectType) -> HKAuthorizationStatus)? = nil,
     save: (@MainActor ([HKSample]) async throws -> Void)? = nil,
-    deleteSleepNight: (@MainActor (String) async throws -> Void)? = nil
+    deleteSleepNight: (@MainActor (String) async throws -> Void)? = nil,
+    retireSleepNight: (@MainActor (String) async throws -> Void)? = nil
   ) {
     let store = HKHealthStore()
     self.store = store
@@ -31,31 +33,50 @@ final class HealthExporter {
     self.save = save ?? { try await store.save($0) }
     self.deleteSleepNight =
       deleteSleepNight ?? { nightID in
-        let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
-          HKQuery.predicateForObjects(from: HKSource.default()),
-          HKQuery.predicateForObjects(
-            withMetadataKey: "OuraSyncSleepNight", allowedValues: [nightID]),
-          HKQuery.predicateForObjects(
-            withMetadataKey: "OuraSyncSleepStages", allowedValues: [true]),
-        ])
-        try await withCheckedThrowingContinuation {
-          (continuation: CheckedContinuation<Void, Error>) in
-          store.deleteObjects(of: HKCategoryType(.sleepAnalysis), predicate: predicate) {
-            success, _, error in
-            if let error {
-              continuation.resume(throwing: error)
-            } else if success {
-              continuation.resume()
-            } else {
-              continuation.resume(throwing: CocoaError(.fileWriteUnknown))
-            }
-          }
-        }
+        try await Self.deleteSleepRecords(nightID, includeBedtime: false, store: store)
+      }
+    self.retireSleepNight =
+      retireSleepNight ?? { nightID in
+        try await Self.deleteSleepRecords(nightID, includeBedtime: true, store: store)
       }
     if self.enabled {
       status = "Waiting to check saved measurements"
     } else if UserDefaults.standard.object(forKey: "health.enabled") != nil {
       status = "Export is off"
+    }
+  }
+
+  private static func deleteSleepRecords(
+    _ nightID: String, includeBedtime: Bool, store: HKHealthStore
+  ) async throws {
+    var matches: [NSPredicate] = [
+      NSCompoundPredicate(andPredicateWithSubpredicates: [
+        HKQuery.predicateForObjects(
+          withMetadataKey: "OuraSyncSleepNight", allowedValues: [nightID]),
+        HKQuery.predicateForObjects(withMetadataKey: "OuraSyncSleepStages", allowedValues: [true]),
+      ])
+    ]
+    if includeBedtime {
+      let bedtimeID = nightID.replacingOccurrences(of: ".sleep.bed.", with: ".bed.")
+      matches.append(
+        HKQuery.predicateForObjects(
+          withMetadataKey: HKMetadataKeySyncIdentifier, allowedValues: ["ourasync.\(bedtimeID)"]))
+    }
+    let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+      HKQuery.predicateForObjects(from: HKSource.default()),
+      NSCompoundPredicate(orPredicateWithSubpredicates: matches),
+    ])
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+      store.deleteObjects(of: HKCategoryType(.sleepAnalysis), predicate: predicate) {
+        success, _, error in
+        if let error {
+          continuation.resume(throwing: error)
+        } else if success {
+          continuation.resume()
+        } else {
+          continuation.resume(throwing: CocoaError(.fileWriteUnknown))
+        }
+      }
     }
   }
 
@@ -210,6 +231,13 @@ final class HealthExporter {
         guard mayExportSleep() else { return false }
         // Whole-night replacement also removes obsolete epochs when a revision
         // shrinks. The pending journal makes deletion and partial saves retryable.
+        for obsoleteID in period.supersededIDs {
+          guard mayExportSleep() else { return false }
+          try Task.checkCancellation()
+          try await retireSleepNight(obsoleteID)
+        }
+        guard mayExportSleep() else { return false }
+        try Task.checkCancellation()
         try await deleteSleepNight(period.id)
         for offset in stride(from: 0, to: period.epochs.count, by: 500) {
           guard mayExportSleep() else { return false }

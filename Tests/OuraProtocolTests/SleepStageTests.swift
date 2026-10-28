@@ -334,5 +334,33 @@ func finalPageIsClippedByDeclaredDurationNotAwakeCodes(unusedCode: UInt8) throws
   events.removeAll { $0.tag == 0x5a && $0.body.first == 22 }
   let partial = try #require(
     SleepStages(events: events, session: UUID(), now: sleepReference).periods.first)
-  #expect(partial.timing == .estimatedFromAnalysisCompletion)
+  #expect(partial.timing == .anchoredToSleepSummary)
+  #expect(partial.epochs.count == 1_144)
+  #expect(partial.unrecordedTail == 600)
+}
+
+@Test(arguments: [true, false])
+func finalizedShortRunRetainsOnlyCorroboratedRecordedStages(matchingTotals: Bool) throws {
+  let events = try [
+    sleepAnchor(),
+    sleepEvent(0x76, 100_000, sleepBytes(82_000) + sleepBytes(100_000)),
+    sleepEvent(0x49, 100_000, [30, 0, 0, 0]),
+    sleepPage(0, at: 100_010, packed: 0),
+    sleepEvent(0x4c, 100_020, [0, 0, 0, 0, 0, 0, matchingTotals ? 52 : 51, 0, 0, 0, 0, 0, 0, 0]),
+  ]
+  let period = try #require(
+    SleepStages(
+      events: events, session: UUID(),
+      now: sleepReference.addingTimeInterval(1000)
+    ).periods.first)
+  #expect(period.epochs.count == 52)
+  #expect(period.epochs.allSatisfy { $0.stage == .deep })
+  if matchingTotals {
+    #expect(period.timing == .anchoredToSleepSummary)
+    #expect(period.start == sleepReference.addingTimeInterval(-1800))
+    #expect(period.end == sleepReference)
+    #expect(period.unrecordedTail == 240)
+  } else {
+    #expect(period.timing == .estimatedFromAnalysisCompletion)
+  }
 }

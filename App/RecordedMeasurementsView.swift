@@ -104,10 +104,16 @@ struct RecordedSleepStagesView: View {
       Text("Across the available stage recording")
         .font(.caption).foregroundStyle(Color.secondaryInk)
       SleepStageChart(
-        intervals: SleepChartStyle.intervals(for: period),
+        intervals: SleepChartStyle.intervals(for: period), timeRange: period.start...period.end,
         accessibilitySummary: period.timing == .anchoredToSleepSummary
           ? "Ring sleep stages, timed from the ring’s sleep summary."
           : "Ring sleep stages. Clock times are approximate.")
+      if period.unrecordedTail > 0 {
+        Text(
+          "\(Int(period.unrecordedTail / 60)) min at the end have no recorded stages. This gap stays blank and is not exported to Apple Health."
+        )
+        .font(.caption).foregroundStyle(Color.secondaryInk)
+      }
       ForEach(SleepChartStyle.stages, id: \.self) { stage in
         HStack(spacing: 10) {
           RoundedRectangle(cornerRadius: 3).fill(SleepChartStyle.color(stage, scheme: colorScheme))

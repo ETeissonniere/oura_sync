@@ -260,7 +260,11 @@ public actor EventStore {
       period.epochs.map {
         Epoch(id: $0.id, stage: $0.stage, start: $0.start, end: $0.end)
       })
-    let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    // Cleanup is part of the revision: discovering an obsolete exported identity
+    // must trigger a retry even when the retained epochs did not change.
+    let cleanup = try encoder.encode(period.supersededIDs.sorted())
+    let fingerprintData = period.supersededIDs.isEmpty ? data : data + cleanup
+    let fingerprint = SHA256.hash(data: fingerprintData).map { String(format: "%02x", $0) }.joined()
     let lookup = try prepare(
       "SELECT fingerprint, version, completed FROM health_sleep_exports WHERE id = ?")
     defer { sqlite3_finalize(lookup) }

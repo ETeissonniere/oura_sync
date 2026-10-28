@@ -17,7 +17,7 @@ struct RecordedSleepSummary: View {
       Text(period.start.formatted(date: .abbreviated, time: .omitted))
         .font(.subheadline).foregroundStyle(Color.secondaryInk)
       SleepStageChart(
-        intervals: SleepChartStyle.intervals(for: period),
+        intervals: SleepChartStyle.intervals(for: period), timeRange: period.start...period.end,
         accessibilitySummary: period.timing == .anchoredToSleepSummary
           ? "Ring sleep stages, timed from the ring’s sleep summary."
           : "Ring sleep stages. Clock times are approximate.")
@@ -27,6 +27,10 @@ struct RecordedSleepSummary: View {
           : "Time asleep across available stages. Clock times are approximate; recording may cover only part of the night."
       )
       .font(.caption).foregroundStyle(Color.secondaryInk)
+      if period.unrecordedTail > 0 {
+        Text("\(Int(period.unrecordedTail / 60)) min at the end have no recorded stages.")
+          .font(.caption).foregroundStyle(Color.secondaryInk)
+      }
       Button(action: showSleep) {
         HStack {
           Text("Explore your sleep")

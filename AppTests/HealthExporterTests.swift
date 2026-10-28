@@ -1,7 +1,7 @@
 import HealthKit
-import OuraProtocol
 import XCTest
 
+@testable import OuraProtocol
 @testable import OuraSync
 
 @MainActor
@@ -393,6 +393,49 @@ final class HealthExporterTests: XCTestCase {
     await exporter.export([], sleepPeriods: [period], journal: journal)
     XCTAssertEqual(saved, 0)
     XCTAssertEqual(deleted, 0)
+  }
+
+  func testObsoleteSleepIdentitiesRetireBeforeReplacementAndRetryAfterFailure() async throws {
+    let journal = try EventStore(url: temporaryJournalURL())
+    var period = try sleepPeriod(minutes: 26)
+    period.supersededIDs = ["old-night"]
+    var attempts = 0
+    var saves = 0
+    let exporter = HealthExporter(
+      enabled: true, authorizationStatus: { _ in .sharingAuthorized },
+      save: { saves += $0.count }, deleteSleepNight: { _ in },
+      retireSleepNight: { id in
+        XCTAssertEqual(id, "old-night")
+        attempts += 1
+        if attempts == 1 { throw CocoaError(.fileWriteUnknown) }
+      })
+    await exporter.export([], sleepPeriods: [period], journal: journal)
+    XCTAssertEqual(saves, 0)
+    let pending = try await journal.prepareSleepHealthExport(period)
+    XCTAssertNotNil(pending)
+    await exporter.export([], sleepPeriods: [period], journal: journal)
+    XCTAssertEqual(attempts, 2)
+    XCTAssertEqual(saves, 52)
+    let completed = try await journal.prepareSleepHealthExport(period)
+    XCTAssertNil(completed)
+  }
+
+  func testPausingDuringAliasRetirementKeepsCanonicalStagesIntact() async throws {
+    let journal = try EventStore(url: temporaryJournalURL())
+    var period = try sleepPeriod(minutes: 26)
+    period.supersededIDs = ["old-night"]
+    var canonicalDeletes = 0
+    var saves = 0
+    var exporter: HealthExporter!
+    exporter = HealthExporter(
+      enabled: true, authorizationStatus: { _ in .sharingAuthorized },
+      save: { saves += $0.count }, deleteSleepNight: { _ in canonicalDeletes += 1 },
+      retireSleepNight: { _ in exporter.pause() })
+    await exporter.export([], sleepPeriods: [period], journal: journal)
+    XCTAssertEqual(canonicalDeletes, 0)
+    XCTAssertEqual(saves, 0)
+    let pending = try await journal.prepareSleepHealthExport(period)
+    XCTAssertNotNil(pending)
   }
 
   private func sleepPeriod(minutes: UInt32, finalized: Bool = true) throws -> SleepStagePeriod {

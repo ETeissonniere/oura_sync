@@ -49,3 +49,19 @@ private func journalSleep(epochCount: Int = 3, stage: SleepStage = .light) -> Sl
   #expect(
     try await store.prepareSleepHealthExport(journalSleep(epochCount: 2, stage: .deep)) == nil)
 }
+
+@Test func newlyDiscoveredSleepAliasesRequireCleanupEvenWithUnchangedStages() async throws {
+  let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+    UUID().uuidString + ".sqlite")
+  let store = try EventStore(url: url)
+  var period = journalSleep()
+  let original = try #require(await store.prepareSleepHealthExport(period))
+  try await store.completeSleepHealthExport(original)
+  period.supersededIDs = ["older-night"]
+  let cleanup = try #require(await store.prepareSleepHealthExport(period))
+  #expect(cleanup.version == original.version + 1)
+  let retry = try #require(await store.prepareSleepHealthExport(period))
+  #expect(retry.version == cleanup.version)
+  try await store.completeSleepHealthExport(retry)
+  #expect(try await store.prepareSleepHealthExport(period) == nil)
+}
