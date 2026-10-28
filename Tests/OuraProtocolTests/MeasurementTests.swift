@@ -221,14 +221,13 @@ func averagesOutsideValidRingTimeAreNotExported(counter: UInt32) throws {
   #expect(samples.first?.start == samples.first?.end)
 }
 
-@Test func oxygenContinuationAndMissingValuesDoNotShiftRecordedTimes() throws {
+@Test func unfilteredOxygenPacketDoesNotBecomeDisplayedMeasurements() throws {
   let events = try [
     event(0x42, at: 12_000, body: littleEndian(1_790_000_000)),
     event(0x6f, at: 12_000, body: [0, 97, 0, 98, 255]),
   ]
   let samples = Measurements(events: events, session: UUID(), now: referenceTime).samples
-  #expect(samples.map(\.value) == [97, 98])
-  #expect(samples.map(\.end) == [referenceTime.addingTimeInterval(-2), referenceTime])
+  #expect(samples.isEmpty)
 }
 
 @Test func activityUsesNonlinearMETScaleWithoutInventingStepsOrBinTimes() throws {
@@ -241,4 +240,21 @@ func averagesOutsideValidRingTimeAreNotExported(counter: UInt32) throws {
   #expect(samples.first?.kind == .activityMET)
   #expect(abs((samples.first?.value ?? 0) - (1 + 12.8 + 16) / 3) < 0.0001)
   #expect(samples.first?.end == referenceTime)
+}
+
+@Test func filteredOxygenMinuteUsesNativeDelayAndStableIdentity() throws {
+  var events = try [event(0x42, at: 12000, body: littleEndian(1_790_000_000))]
+  for index in 0...60 {
+    let counter = UInt32(11000 + index * 10)
+    events.append(try event(0x47, at: counter, body: [2]))
+    events.append(try event(0x6f, at: counter, body: index == 60 ? [0, 95, 255] : [0, 95]))
+  }
+  let session = UUID()
+  let samples = Measurements(events: events, session: session, now: referenceTime).samples
+  #expect(samples.count == 1)
+  #expect(samples.first?.kind == .oxygenSaturation)
+  #expect(samples.first?.value == 95)
+  #expect(samples.first?.start == referenceTime.addingTimeInterval(-46))
+  #expect(samples.first?.start == samples.first?.end)
+  #expect(samples == Measurements(events: events, session: session, now: referenceTime).samples)
 }

@@ -32,7 +32,7 @@ struct MetricPresentation: Identifiable {
     .init(
       kind: .oxygenSaturation, title: "Blood oxygen", unit: "%",
       explanation:
-        "Unvalidated ring oxygen readings. Gen 3 calibration is not yet verified; these values are not exported to Apple Health or suitable for interpreting oxygen levels.",
+        "Minute estimates filtered using reconstructed Gen 3 signal-quality processing. Calibration remains unverified, and missing recordings are not filled in. Not exported to Apple Health or suitable for assessing oxygen levels.",
       precision: 0),
     .init(
       kind: .activityMET, title: "Activity intensity", unit: "MET",
@@ -130,6 +130,10 @@ struct MetricChartCard: View {
   var body: some View {
     Surface(prominent: metric.kind == .heartRate) {
       Text(metric.title).font(.headline)
+      if metric.kind == .oxygenSaturation {
+        Text("Filtered estimate · Calibration unverified")
+          .font(.caption).foregroundStyle(Color.secondaryInk)
+      }
       ViewThatFits(in: .horizontal) {
         HStack(alignment: .firstTextBaseline, spacing: 6) { valueAndUnit }
         VStack(alignment: .leading, spacing: 2) { valueAndUnit }

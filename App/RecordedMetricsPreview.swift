@@ -84,7 +84,16 @@
             Self.event(0x6a, timestamp, [0, 0, 0, 0, UInt8(112 + variation), 0, 60, 1, 0, 0]))
           events.append(
             Self.event(0x50, timestamp, [0, UInt8(11 + variation * 3), UInt8(14 + variation * 2)]))
-          events.append(Self.event(0x6f, timestamp, [0, UInt8(96 + variation % 4), 98, 97, 255]))
+          // Exercise the same complete-minute path as recorded ring history.
+          for second in 0...60 {
+            let oxygenTime = timestamp - 600 + UInt32(second * 10)
+            events.append(Self.event(0x47, oxygenTime, [2]))
+            let reading = UInt8(96 + variation % 4)
+            events.append(
+              Self.event(
+                0x6f, oxygenTime,
+                second == 60 ? [0, reading, 255] : [0, reading]))
+          }
           events.append(Self.event(0x47, timestamp, [UInt8(variation * 3), 0, 0, 0]))
         }
       }

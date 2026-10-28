@@ -165,6 +165,9 @@ final class OuraSyncUITests: XCTestCase {
             thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: 0.4)))
       }
       XCTAssertTrue(heading.isHittable, "Metric heading should be reachable: \(title)")
+      if title == "Blood oxygen" {
+        XCTAssertTrue(app.staticTexts["Filtered estimate · Calibration unverified"].exists)
+      }
       attachScreenshot(title)
     }
     app.swipeUp()
@@ -199,7 +202,8 @@ final class OuraSyncUITests: XCTestCase {
     let explanation = app.staticTexts.matching(
       NSPredicate(
         format: "label == %@",
-        "Stages reported by your ring, timed from its sleep summary. Complete recordings can sync to Apple Health when sleep access is allowed.")
+        "Stages reported by your ring, timed from its sleep summary. Complete recordings can sync to Apple Health when sleep access is allowed."
+      )
     ).firstMatch
     reveal(explanation, in: app)
     XCTAssertTrue(explanation.exists)
@@ -352,7 +356,7 @@ final class OuraSyncUITests: XCTestCase {
     app.launchArguments = ["--recorded", "--nightly-vitals-only"]
     app.launch()
     reveal(app.staticTexts["During detected bedtime"], in: app)
-    reveal(app.staticTexts["Average blood oxygen"], in: app)
+    reveal(app.staticTexts["Recorded oxygen average"], in: app)
     XCTAssertTrue(app.staticTexts["Average HRV"].exists)
     XCTAssertFalse(app.staticTexts["Awaiting readings"].firstMatch.exists)
     attachScreenshot("Nightly vitals from simulated recordings")
@@ -360,7 +364,7 @@ final class OuraSyncUITests: XCTestCase {
     app.launchArguments = ["--recorded", "--nightly-vitals-only", "--empty-nightly-vitals"]
     app.launch()
     reveal(app.staticTexts["During detected bedtime"], in: app)
-    reveal(app.staticTexts["Average blood oxygen"], in: app)
+    reveal(app.staticTexts["Recorded oxygen average"], in: app)
     XCTAssertTrue(app.staticTexts["Awaiting readings"].firstMatch.exists)
     XCTAssertTrue(app.staticTexts["Awaiting consistent readings"].exists)
     attachScreenshot("Nightly vitals awaiting readings")

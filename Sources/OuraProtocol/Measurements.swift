@@ -40,12 +40,37 @@ public struct Measurements: Sendable {
     }
     var result: [Measurement] = []
     var undated = 0
-    for event in events where [0x5d, 0x75, 0x6a, 0x50, 0x6f, 0x80, 0x47].contains(event.tag) {
+    var oxygen = OxygenEventProcessor()
+    for event in events {
+      let batches = oxygen.process(
+        tag: event.tag, body: Array(event.body), at: Int64(event.timestamp) * 100)
+      for batch in batches {
+        for reading in OxygenMinuteOutput.readings(from: batch) where reading.quality {
+          guard reading.time >= 0,
+            let anchor = anchors.last(where: { $0.counter * 100 <= reading.time }) ?? anchors.first
+          else {
+            undated += 1
+            continue
+          }
+          let unix = anchor.unix + Double(reading.time - anchor.counter * 100) / 1000
+          guard unix >= 1_577_836_800, unix <= now.timeIntervalSince1970 else {
+            undated += 1
+            continue
+          }
+          let date = Date(timeIntervalSince1970: unix)
+          result.append(
+            Measurement(
+              id: "\(session.uuidString).oxygen.v1.\(reading.time)",
+              kind: .oxygenSaturation, start: date, end: date, value: Double(reading.value)))
+        }
+      }
+    }
+    for event in events where [0x5d, 0x75, 0x6a, 0x50, 0x80, 0x47].contains(event.tag) {
       let bytes = Array(event.body)
       let digest = SHA256.hash(data: event.body).map { String(format: "%02x", $0) }.joined()
       let prefix = "\(session.uuidString).\(event.tag).\(event.timestamp).\(digest)"
       switch event.tag {
-      case 0x75, 0x6a, 0x50, 0x6f, 0x80, 0x47:
+      case 0x75, 0x6a, 0x50, 0x80, 0x47:
         let kind: MeasurementKind
         let values: [Double]
         switch event.tag {
@@ -92,21 +117,15 @@ public struct Measurements: Sendable {
           values = bytes.dropFirst().map {
             $0 < 128 ? Double($0) / 10 : 12.8 + Double($0 - 128) / 5
           }
-        default:
-          guard bytes.count >= 2 else { continue }
-          kind = .oxygenSaturation
-          var readings = Array(bytes.dropFirst())
-          if readings.last == 255 { readings.removeLast() }
-          values = readings.map(Double.init)
+        default: continue
         }
         guard !values.isEmpty else { continue }
         // Activity bin direction is not yet established. Show its packet mean
         // instead of assigning minute timestamps or inventing a step count.
         let readings = kind == .activityMET ? [values.reduce(0, +) / Double(values.count)] : values
-        let spacing: Int64 = kind == .skinTemperature ? 300 : kind == .oxygenSaturation ? 10 : 0
+        let spacing: Int64 = kind == .skinTemperature ? 300 : 0
         for (index, value) in readings.enumerated() {
           if kind == .skinTemperature && value <= 0 { continue }
-          if kind == .oxygenSaturation && !(1...100).contains(value) { continue }
           let counter = Int64(event.timestamp) - Int64(readings.count - 1 - index) * spacing
           guard let window = interval(from: counter, to: counter) else {
             undated += 1
