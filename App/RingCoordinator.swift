@@ -88,6 +88,12 @@ final class RingCoordinator {
   private func scheduleAutomaticSync() {
     guard automaticSyncPending, !busy, automaticSyncTask == nil else { return }
     let delay = max(0, 60 - Date.now.timeIntervalSince(lastAutomaticAttempt))
+    // Submit while we still have execution time, before a throttle timer can
+    // be suspended. A later Bluetooth wake can also resume the saved cursor.
+    if delay > 0 && UIApplication.shared.applicationState != .active {
+      BackgroundSync.schedule()
+      return
+    }
     automaticSyncTask = Task { [weak self] in
       if delay > 0 {
         do { try await Task.sleep(for: .seconds(delay)) } catch { return }
@@ -110,6 +116,7 @@ final class RingCoordinator {
       automaticSyncPending = true
       automaticSyncTask?.cancel()
       automaticSyncTask = nil
+      BackgroundSync.schedule()
     } else {
       scheduleAutomaticSync()
     }
@@ -189,6 +196,7 @@ final class RingCoordinator {
     guard let transport else { return false }
     busy = true
     automaticSyncPending = false
+    BackgroundSync.schedule()
     automaticSyncTask?.cancel()
     automaticSyncTask = nil
     error = nil
