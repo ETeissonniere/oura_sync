@@ -183,9 +183,18 @@ final class RingTransport: NSObject {
     }
   }
 
-  private func fail(_ error: Error) {
+  private func fail(_ error: Error, source: String = #function) {
+    let failure = error as NSError
+    // A later disconnect callback must not overwrite the failed operation's cause.
+    if connection != nil || response != nil {
+      UserDefaults.standard.set(
+        [
+          "date": Date(), "source": source, "domain": failure.domain,
+          "code": failure.code, "message": failure.localizedDescription,
+          "hadPendingConnection": connection != nil, "hadPendingRequest": response != nil,
+        ], forKey: "ring.lastBluetoothFailure")
+    }
     #if DEBUG
-      let failure = error as NSError
       print(
         "Bluetooth failure: \(failure.domain) (\(failure.code)): \(failure.localizedDescription)")
     #endif

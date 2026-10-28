@@ -194,31 +194,47 @@ final class RingCoordinator {
     error = nil
     lastAutomaticAttempt = .now
     defer { endOperation() }
+    var phase = "loadingKey"
     do {
       guard let key = try keys.load(for: pairing.peripheralID) else {
         throw RingClient.Failure(
           "The saved ring key is unavailable. No changes have been made to the ring.")
       }
       message = "Connecting…"
+      phase = "connecting"
       if transport.connectedID != pairing.peripheralID {
         try await transport.connect(to: pairing.peripheralID)
       }
       let client = RingClient(connection: transport)
+      phase = "authenticating"
       try await client.authenticate(key: key)
       if pairing.automaticRecordingNeedsRestore == true {
+        phase = "restoringRecording"
         try await restoreAutomaticHeartRate(client)
       }
+      phase = "readingBattery"
       battery = try await client.battery()
       if let battery {
         await RingNotifications.shared.receivedBattery(battery, ringID: pairing.peripheralID)
       }
+      phase = "syncingHistory"
       let completed = try await drain(client: client)
       if completed {
+        phase = "configuringMeasurements"
         try await configureMeasurements(client)
+        phase = "configuringOxygen"
         try await configureOxygenRecording(client)
       }
       return completed
     } catch {
+      // Preserve the latest failure across launches without storing ring keys or readings.
+      let failure = error as NSError
+      UserDefaults.standard.set(
+        [
+          "date": Date(), "phase": phase, "domain": failure.domain,
+          "code": failure.code, "message": failure.localizedDescription,
+          "applicationState": UIApplication.shared.applicationState.rawValue,
+        ], forKey: "ring.lastSyncFailure")
       self.error = error.localizedDescription
       return false
     }
