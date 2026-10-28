@@ -36,6 +36,7 @@ final class RingTransport: NSObject {
   var onHistoryAvailable: (() -> Void)?
   var onLiveHeartRate: (([LiveHeartRateReading]) -> Void)?
   @ObservationIgnored private var reconnectID: UUID?
+  @ObservationIgnored private var closingLink = false
 
   @ObservationIgnored private var central: CBCentralManager!
   @ObservationIgnored private var peripherals: [UUID: CBPeripheral] = [:]
@@ -84,7 +85,7 @@ final class RingTransport: NSObject {
 
   func connect(to id: UUID) async throws {
     try Task.checkCancellation()
-    guard connection == nil, response == nil else { throw Failure.busy }
+    guard connection == nil, response == nil, !closingLink else { throw Failure.busy }
     guard central.state == .poweredOn else { throw Failure.bluetoothUnavailable }
     guard let ring = peripherals[id] ?? central.retrievePeripherals(withIdentifiers: [id]).first
     else {
@@ -121,7 +122,7 @@ final class RingTransport: NSObject {
     -> [Packet]
   {
     try Task.checkCancellation()
-    guard response == nil, connection == nil else { throw Failure.busy }
+    guard response == nil, connection == nil, !closingLink else { throw Failure.busy }
     guard let peripheral, peripheral.state == .connected, let writeCharacteristic,
       connectedID != nil
     else { throw Failure.disconnected }
@@ -144,20 +145,25 @@ final class RingTransport: NSObject {
 
   private func cancelOperation(_ id: UUID) {
     guard operationID == id else { return }
-    fail(CancellationError())
-    // Close the link before another request can consume the cancelled request's reply.
-    if let peripheral { central.cancelPeripheralConnection(peripheral) }
+    if let peripheral {
+      failLink(CancellationError(), peripheral: peripheral)
+    } else {
+      fail(CancellationError())
+    }
   }
 
   func disconnect() {
     reconnectID = nil
-    fail(Failure.disconnected)
-    if let peripheral { central.cancelPeripheralConnection(peripheral) }
+    if let peripheral {
+      failLink(Failure.disconnected, peripheral: peripheral)
+    } else {
+      fail(Failure.disconnected)
+    }
   }
 
   func maintainConnection(to id: UUID, delay: TimeInterval = 0) {
     reconnectID = id
-    guard central.state == .poweredOn else { return }
+    guard central.state == .poweredOn, !closingLink else { return }
     guard let ring = peripherals[id] ?? central.retrievePeripherals(withIdentifiers: [id]).first
     else { return }
     if ring.state == .disconnected {
@@ -178,9 +184,20 @@ final class RingTransport: NSObject {
       do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
       guard let self else { return }
       // Close the link so a late response cannot be mistaken for the next request.
-      self.fail(Failure.timeout)
-      if let ring = self.peripheral { self.central.cancelPeripheralConnection(ring) }
+      if let ring = self.peripheral {
+        self.failLink(Failure.timeout, peripheral: ring)
+      } else {
+        self.fail(Failure.timeout)
+      }
     }
+  }
+
+  private func failLink(_ error: Error, peripheral: CBPeripheral, source: String = #function) {
+    closingLink = peripheral.state != .disconnected
+    fail(error, source: source)
+    // Clearing local state alone leaves a connected but unusable link. Closing
+    // it lets the existing disconnect callback resume automatic reconnection.
+    central.cancelPeripheralConnection(peripheral)
   }
 
   private func fail(_ error: Error, source: String = #function) {
@@ -219,6 +236,7 @@ extension RingTransport: @preconcurrency CBCentralManagerDelegate {
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
     if central.state != .poweredOn {
       isScanning = false
+      closingLink = false
       fail(Failure.bluetoothUnavailable)
     } else {
       status = "Bluetooth ready"
@@ -243,7 +261,7 @@ extension RingTransport: @preconcurrency CBCentralManagerDelegate {
   }
 
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-    guard peripheral.identifier == self.peripheral?.identifier else { return }
+    guard peripheral.identifier == self.peripheral?.identifier, !closingLink else { return }
     peripheral.delegate = self
     peripheral.discoverServices([CBUUID(string: Commands.service)])
   }
@@ -252,6 +270,7 @@ extension RingTransport: @preconcurrency CBCentralManagerDelegate {
     _ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?
   ) {
     guard peripheral.identifier == self.peripheral?.identifier else { return }
+    closingLink = false
     fail(error ?? Failure.disconnected)
     if let reconnectID { maintainConnection(to: reconnectID, delay: 5) }
   }
@@ -260,8 +279,9 @@ extension RingTransport: @preconcurrency CBCentralManagerDelegate {
     _ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?
   ) {
     guard peripheral.identifier == self.peripheral?.identifier else { return }
+    closingLink = false
     fail(error ?? Failure.disconnected)
-    if let reconnectID { maintainConnection(to: reconnectID) }
+    if let reconnectID { maintainConnection(to: reconnectID, delay: 5) }
   }
 
   func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
@@ -280,9 +300,9 @@ extension RingTransport: @preconcurrency CBCentralManagerDelegate {
 
 extension RingTransport: @preconcurrency CBPeripheralDelegate {
   func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-    guard peripheral.identifier == self.peripheral?.identifier else { return }
+    guard peripheral.identifier == self.peripheral?.identifier, !closingLink else { return }
     if let error {
-      fail(error)
+      failLink(error, peripheral: peripheral)
       return
     }
     guard
@@ -290,7 +310,7 @@ extension RingTransport: @preconcurrency CBPeripheralDelegate {
         $0.uuid == CBUUID(string: Commands.service)
       })
     else {
-      fail(Failure.missingCharacteristics)
+      failLink(Failure.missingCharacteristics, peripheral: peripheral)
       return
     }
     peripheral.discoverCharacteristics(
@@ -302,9 +322,9 @@ extension RingTransport: @preconcurrency CBPeripheralDelegate {
   func peripheral(
     _ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?
   ) {
-    guard peripheral.identifier == self.peripheral?.identifier else { return }
+    guard peripheral.identifier == self.peripheral?.identifier, !closingLink else { return }
     if let error {
-      fail(error)
+      failLink(error, peripheral: peripheral)
       return
     }
     writeCharacteristic = service.characteristics?.first {
@@ -315,7 +335,7 @@ extension RingTransport: @preconcurrency CBPeripheralDelegate {
         $0.uuid == CBUUID(string: Commands.notifyCharacteristic)
       })
     else {
-      fail(Failure.missingCharacteristics)
+      failLink(Failure.missingCharacteristics, peripheral: peripheral)
       return
     }
     peripheral.setNotifyValue(true, for: notify)
@@ -325,9 +345,9 @@ extension RingTransport: @preconcurrency CBPeripheralDelegate {
     _ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic,
     error: Error?
   ) {
-    guard peripheral.identifier == self.peripheral?.identifier else { return }
+    guard peripheral.identifier == self.peripheral?.identifier, !closingLink else { return }
     if let error {
-      fail(error)
+      failLink(error, peripheral: peripheral)
       return
     }
     guard characteristic.uuid == CBUUID(string: Commands.notifyCharacteristic),
@@ -352,16 +372,16 @@ extension RingTransport: @preconcurrency CBPeripheralDelegate {
   func peripheral(
     _ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?
   ) {
-    guard peripheral.identifier == self.peripheral?.identifier else { return }
-    if let error { fail(error) }
+    guard peripheral.identifier == self.peripheral?.identifier, !closingLink else { return }
+    if let error { failLink(error, peripheral: peripheral) }
   }
 
   func peripheral(
     _ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?
   ) {
-    guard peripheral.identifier == self.peripheral?.identifier else { return }
+    guard peripheral.identifier == self.peripheral?.identifier, !closingLink else { return }
     if let error {
-      fail(error)
+      failLink(error, peripheral: peripheral)
       return
     }
     guard characteristic.uuid == CBUUID(string: Commands.notifyCharacteristic),
@@ -386,8 +406,7 @@ extension RingTransport: @preconcurrency CBPeripheralDelegate {
         pending?.resume(returning: result)
       }
     } catch {
-      fail(error)
-      central.cancelPeripheralConnection(peripheral)
+      failLink(error, peripheral: peripheral)
     }
   }
 }
