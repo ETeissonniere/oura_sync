@@ -37,6 +37,7 @@ final class RingTransport: NSObject {
   var onLiveHeartRate: (([LiveHeartRateReading]) -> Void)?
   @ObservationIgnored private var reconnectID: UUID?
   @ObservationIgnored private var closingLink = false
+  @ObservationIgnored private var reconnectTask: Task<Void, Never>?
 
   @ObservationIgnored private var central: CBCentralManager!
   @ObservationIgnored private var peripherals: [UUID: CBPeripheral] = [:]
@@ -91,6 +92,8 @@ final class RingTransport: NSObject {
     else {
       throw Failure.disconnected
     }
+    reconnectTask?.cancel()
+    reconnectTask = nil
     stopScanning()
     if let previous = peripheral, previous.identifier != id {
       central.cancelPeripheralConnection(previous)
@@ -111,10 +114,10 @@ final class RingTransport: NSObject {
         case .connected:
           ring.discoverServices([CBUUID(string: Commands.service)])
         case .disconnected:
-          central.connect(ring)
+          startConnection(ring, origin: "requested")
         case .connecting:
           // Automatic restoration may already own the connection attempt,
-          // including its CoreBluetooth-managed delay. Await that callback.
+          // so await its callback instead of issuing a second request.
           break
         case .disconnecting:
           fail(Failure.disconnected)
@@ -163,6 +166,8 @@ final class RingTransport: NSObject {
 
   func disconnect() {
     reconnectID = nil
+    reconnectTask?.cancel()
+    reconnectTask = nil
     if let peripheral {
       failLink(Failure.disconnected, peripheral: peripheral)
     } else {
@@ -170,8 +175,10 @@ final class RingTransport: NSObject {
     }
   }
 
-  func maintainConnection(to id: UUID, delay: TimeInterval = 0) {
+  func maintainConnection(to id: UUID) {
     reconnectID = id
+    reconnectTask?.cancel()
+    reconnectTask = nil
     guard central.state == .poweredOn, !closingLink else { return }
     guard let ring = peripherals[id] ?? central.retrievePeripherals(withIdentifiers: [id]).first
     else { return }
@@ -179,12 +186,28 @@ final class RingTransport: NSObject {
       peripheral = ring
       ring.delegate = self
       restoring = true
-      // Let CoreBluetooth own the delay so recovery does not depend on an app timer
-      // continuing to execute while iOS has suspended us.
-      let options: [String: Any]? =
-        delay > 0 ? [CBConnectPeripheralOptionStartDelayKey: NSNumber(value: delay)] : nil
-      central.connect(ring, options: options)
+      startConnection(ring, origin: "automatic")
     }
+  }
+
+  private func scheduleReconnect() {
+    guard reconnectID != nil else { return }
+    reconnectTask?.cancel()
+    // This timer may be suspended in the background; Bluetooth restoration and
+    // scheduled app refresh remain the execution opportunities while suspended.
+    reconnectTask = Task { [weak self] in
+      do { try await Task.sleep(for: .seconds(5)) } catch { return }
+      guard let self, let id = self.reconnectID else { return }
+      self.reconnectTask = nil
+      self.maintainConnection(to: id)
+    }
+  }
+
+  private func startConnection(_ ring: CBPeripheral, origin: String) {
+    UserDefaults.standard.set(
+      ["date": Date(), "origin": origin, "state": ring.state.rawValue],
+      forKey: "ring.lastConnectionAttempt")
+    central.connect(ring, options: nil)
   }
 
   private func armTimeout(seconds: UInt64) {
@@ -281,7 +304,10 @@ extension RingTransport: @preconcurrency CBCentralManagerDelegate {
     guard peripheral.identifier == self.peripheral?.identifier else { return }
     closingLink = false
     fail(error ?? Failure.disconnected)
-    if let reconnectID { maintainConnection(to: reconnectID, delay: 5) }
+    let failure = error as NSError?
+    guard failure?.domain != CBErrorDomain || failure?.code != CBError.invalidParameters.rawValue
+    else { return }
+    scheduleReconnect()
   }
 
   func centralManager(
@@ -290,7 +316,7 @@ extension RingTransport: @preconcurrency CBCentralManagerDelegate {
     guard peripheral.identifier == self.peripheral?.identifier else { return }
     closingLink = false
     fail(error ?? Failure.disconnected)
-    if let reconnectID { maintainConnection(to: reconnectID, delay: 5) }
+    scheduleReconnect()
   }
 
   func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
