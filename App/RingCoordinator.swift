@@ -235,6 +235,11 @@ final class RingCoordinator {
           "code": failure.code, "message": failure.localizedDescription,
           "applicationState": UIApplication.shared.applicationState.rawValue,
         ], forKey: "ring.lastSyncFailure")
+      // Each history batch is durable before the cursor advances. A later
+      // disconnect must not hide readings already saved by this attempt.
+      if phase == "syncingHistory", syncedEvents > 0, !Task.isCancelled {
+        await refreshMeasurements()
+      }
       self.error = error.localizedDescription
       return false
     }
@@ -353,10 +358,10 @@ final class RingCoordinator {
 
   private func drain(client: RingClient) async throws -> Bool {
     guard let pairing else { return false }
+    syncedEvents = 0
     let store = try historyStore()
     try await client.prepareSync()
     var cursor = try await store.cursor(session: pairing.session)
-    syncedEvents = 0
     var tailPasses = 0
     var budget = SyncDrainBudget()
     var progress = HistorySyncProgress()
